@@ -1,0 +1,5 @@
+/target
+*.pcap
+*.pcapng
+!tests/fixtures/*.pcapng
+!tests/fixtures/*.pcap
