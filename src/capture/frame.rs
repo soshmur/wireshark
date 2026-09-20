@@ -12,10 +12,6 @@ pub struct Timestamp {
 /// One link-layer frame plus its capture metadata. Bytes are shared so later
 /// stages can hold onto them without copying.
 #[derive(Debug, Clone)]
-#[allow(
-    dead_code,
-    reason = "the Phase 0 consumer only counts frames; Phase 1 reads every field"
-)]
 pub struct RawFrame {
     pub ts: Timestamp,
     /// Bytes actually captured (`bytes.len()`), kept explicit to mirror the pcap header.

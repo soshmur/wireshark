@@ -68,3 +68,44 @@ can tell which stage is saturated.
 `pcap_stats` is called every 1,000 frames and on every read timeout. Calling it
 per frame would double the per-frame syscall cost for a number that only needs
 to be current at UI refresh rate.
+
+## Phase 1
+
+### Chunked ring buffer, eviction in 4,096-frame units
+
+The store keeps sealed, immutable `Arc<Chunk>`s of 4,096 frames plus one open
+chunk. A UI snapshot is therefore ~250 `Arc` clones for a million frames plus a
+copy of the open chunk's `Arc<Frame>` pointers — measured at 9 µs — and row
+lookup is two array indexes. The price is that the frame/byte limits are
+honoured to within one chunk (documented in the options dialog). Frame-by-frame
+eviction would need per-frame bookkeeping the UI would have to re-read every
+repaint; being 4k frames over a 1e6 limit is invisible.
+
+### Frame numbers are assigned by the dequeuing worker, not the store
+
+Numbers must follow arrival order even once dissection runs on several threads.
+The single thread that pulls from the capture channel is the only place that
+sees arrival order, so it numbers frames before handing them to dissection.
+The store checks continuity and renumbers on a mismatch rather than trusting
+the producer blindly.
+
+### The UI polls a store version counter
+
+The store bumps an `AtomicU64` on every append; the UI compares it with its
+snapshot's version each repaint and only re-snapshots on change. This avoids
+a channel from worker to UI and keeps the UI's read path to one atomic load
+when nothing changed.
+
+### Absolute times are UTC
+
+There is no time-zone database in the fixed stack and `std` cannot query the
+local offset portably. The column header says "(UTC)". Local-time display is
+a candidate for a later phase if it matters.
+
+### Memory accounting counts the tree, and it is expensive
+
+`Frame::approx_size` includes the dissection tree's label strings. On the 1e6
+benchmark the stub tree alone costs ~1 KB per frame on top of the payload,
+because labels are pre-formatted `String`s. This is the number to watch in
+Phase 2: if real dissectors push it past the 500k frames/s target, labels will
+become lazy (formatted on display from `Value`) rather than eager.

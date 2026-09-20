@@ -15,7 +15,7 @@ native binary with an immediate-mode UI.
 | Phase | Scope | State |
 |---|---|---|
 | 0 | Device enumeration, privilege preflight, capture thread skeleton, window | done |
-| 1 | Packet list, hex/ASCII pane, ring buffer, BPF capture filter | — |
+| 1 | Packet list, hex/ASCII pane, ring buffer, BPF capture filter | done |
 | 2 | Dissectors: Ethernet … TLS | — |
 | 3 | Display filter language | — |
 | 4 | Conversations, reassembly, expert info | — |
@@ -56,21 +56,30 @@ the `access_bpf` group access.
 cargo run --release
 ```
 
-## Running the Phase 0 demo
+## Running the demo
 
 ```sh
 cargo run --release
 ```
 
-You should see: the preflight banner (green/yellow/red with an actionable
-message), the interface list with addresses and state, Start/Stop, and once
-capturing, the link type in the status bar with a live frame counter, rate and
-drop counters. The Phase 0 consumer discards frames after counting them.
+Pick an interface in the Interfaces window (double-click starts), and frames
+appear in the packet list as they arrive. Click a row (or use the arrow keys,
+PageUp/PageDown, Home/End) to see its bytes in the hex pane. *View > Time
+display* switches between absolute (UTC), seconds since capture start, and
+delta from the previous packet. *Capture > Options* sets the snapshot length
+and the ring-buffer limits (default 1,000,000 frames or 2 GB, whichever first).
+The BPF field is a libpcap *capture* filter, applied in the driver — not a
+display filter (Phase 3).
 
-Headless check of the same pipeline (no window):
+The status bar shows frames held, evictions, memory, capture rate, drops at
+each stage (channel / driver / interface) and the UI frame time.
+
+Developer aids:
 
 ```sh
-cargo run --release --example capture_smoke -- "Wi-Fi" 5
+cargo run --release -- --synthetic 1000000                   # 1e6 generated rows, no network
+cargo run --release --example capture_smoke -- "Wi-Fi" 5     # headless pipeline check
+cargo run --release --example bench_store                    # dissect+store throughput
 ```
 
 ## Architecture

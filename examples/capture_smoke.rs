@@ -8,6 +8,8 @@
 use std::time::{Duration, Instant};
 
 use netscope::capture::{self, Capture, CaptureConfig, Preflight};
+use netscope::dissect::worker::Worker;
+use netscope::store::{Limits, Store};
 
 fn main() {
     let mut args = std::env::args().skip(1);
@@ -64,37 +66,36 @@ fn main() {
         lt.0
     );
 
-    // Consume like the UI never would: on this thread, printing the first few.
+    // The real pipeline: worker dissects into the store; we poll like the UI.
+    let store = Store::new(Limits::default());
+    let mut worker = Worker::spawn(rx, std::sync::Arc::clone(&store), lt);
     let deadline = Instant::now() + Duration::from_secs(secs);
-    let mut shown = 0;
-    let mut consumed = 0u64;
     while Instant::now() < deadline {
-        match rx.recv_timeout(Duration::from_millis(100)) {
-            Ok(f) => {
-                consumed += 1;
-                if shown < 5 {
-                    shown += 1;
-                    let head: Vec<String> = f
-                        .bytes
-                        .iter()
-                        .take(16)
-                        .map(|b| format!("{b:02x}"))
-                        .collect();
-                    println!(
-                        "  frame ts={}.{:09} caplen={} orig_len={} {}",
-                        f.ts.secs,
-                        f.ts.nanos,
-                        f.caplen,
-                        f.orig_len,
-                        head.join(" ")
-                    );
-                }
-            }
-            Err(crossbeam_channel::RecvTimeoutError::Timeout) => {}
-            Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
-        }
+        std::thread::sleep(Duration::from_millis(100));
     }
     cap.stop();
+    worker.join();
+    let snap = store.snapshot();
+    for f in snap.iter().take(5) {
+        let head: Vec<String> = f
+            .bytes
+            .iter()
+            .take(16)
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        println!(
+            "  #{} ts={}.{:09} len={} {} -> {} {} | {}",
+            f.number,
+            f.ts.secs,
+            f.ts.nanos,
+            f.orig_len,
+            f.summary.source,
+            f.summary.destination,
+            f.summary.protocol,
+            head.join(" ")
+        );
+    }
+    let consumed = snap.len();
     let s = cap.stats();
     println!(
         "captured {} frames / {} bytes in {secs}s; consumed {consumed}; dropped: channel {} driver {} interface {}",

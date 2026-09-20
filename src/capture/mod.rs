@@ -6,6 +6,6 @@ pub mod preflight;
 pub mod thread;
 
 pub use device::Device;
-pub use frame::RawFrame;
+pub use frame::{RawFrame, Timestamp};
 pub use preflight::Preflight;
 pub use thread::{Capture, CaptureConfig, StatsSnapshot};

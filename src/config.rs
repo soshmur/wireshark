@@ -5,6 +5,18 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+/// How the packet list's time column is rendered.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub enum TimeMode {
+    /// Wall-clock time of day (UTC) with microseconds.
+    Absolute,
+    /// Seconds since the first frame of the capture.
+    #[default]
+    SinceStart,
+    /// Seconds since the previous displayed frame.
+    DeltaPrevious,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct Config {
@@ -16,6 +28,13 @@ pub struct Config {
     pub capture_filter: String,
     pub promiscuous: bool,
     pub snaplen: i32,
+    /// Ring buffer: evict oldest frames beyond this count.
+    pub ring_max_frames: u64,
+    /// Ring buffer: evict oldest frames beyond this many bytes (approximate).
+    pub ring_max_bytes: u64,
+    pub time_mode: TimeMode,
+    /// Keep the packet list scrolled to the newest frame while capturing.
+    pub auto_scroll: bool,
 }
 
 impl Default for Config {
@@ -26,12 +45,16 @@ impl Default for Config {
             capture_filter: String::new(),
             promiscuous: true,
             snaplen: 262_144,
+            ring_max_frames: 1_000_000,
+            ring_max_bytes: 2 * 1024 * 1024 * 1024,
+            time_mode: TimeMode::SinceStart,
+            auto_scroll: true,
         }
     }
 }
 
 impl Config {
-    /// `%APPDATA%\netscope\config.toml`, `~/.config/netscope/config.toml`,
+    /// `%APPDATA%\netscope\config\config.toml`, `~/.config/netscope/config.toml`,
     /// `~/Library/Application Support/netscope/config.toml`.
     pub fn path() -> Option<PathBuf> {
         directories::ProjectDirs::from("", "", "netscope")
@@ -85,6 +108,10 @@ mod tests {
             capture_filter: "tcp port 443".into(),
             promiscuous: false,
             snaplen: 1600,
+            ring_max_frames: 10,
+            ring_max_bytes: 20,
+            time_mode: TimeMode::DeltaPrevious,
+            auto_scroll: false,
         };
         let text = toml::to_string_pretty(&cfg).expect("serialise");
         let back: Config = toml::from_str(&text).expect("parse");
@@ -96,5 +123,7 @@ mod tests {
         let back: Config = toml::from_str("first_run_acknowledged = true\n").expect("parse");
         assert!(back.first_run_acknowledged);
         assert_eq!(back.snaplen, Config::default().snaplen);
+        assert_eq!(back.ring_max_frames, 1_000_000);
+        assert_eq!(back.time_mode, TimeMode::SinceStart);
     }
 }
