@@ -136,30 +136,36 @@ a tree that is only ever walked top-down.
 
 ### Measured throughput and the remaining gap
 
-Ethernet/IPv4/TCP path, single thread, release, this machine: 132-144k
-frames/s (7.0-7.7 µs/frame) for a 66-node tree, at 3.0 KB accounted per
-frame. The target is 500k/s/core, so this misses by roughly 3.5x.
+Ethernet/IPv4/TCP path, single thread, release, idle machine: **219-227k
+frames/s** (4.4-4.6 µs/frame) for a 66-node tree, at 3.0 KB accounted per
+frame. Through the store as well (dissect + append): 195k frames/s. The
+target is 500k/s/core, so this misses by a factor of about 2.2.
 
-Where the time goes, measured per frame: `tcp::dissect` 2.5 µs,
-`ipv4::dissect` 1.4 µs, `eth::dissect` 0.3 µs, `Tree::from_layers` 1.5 µs.
-The dissectors cost about 85 ns per node produced, dominated by building the
-intermediate `Node` tree: a 104-byte record moved into a child `Vec`, an
-allocation for every parent that has children, and then a second pass to
-flatten it.
+Where the time goes, measured per frame: `tcp::dissect` 1.20 µs,
+`ipv4::dissect` 0.69 µs, `eth::dissect` 0.15 µs, `Tree::from_layers` 0.91 µs,
+`Ctx::new` 0.03 µs. The dissectors cost about 30 ns per node produced,
+dominated by building the intermediate `Node` tree — a 104-byte record moved
+into a child `Vec`, an allocation for every parent with children — and then a
+second pass to flatten it.
 
 Two contained wins were taken. Checksum status became a numeric enum field
 instead of an allocated `String` (five allocations per frame), and the
 field-id index uses FNV-1a rather than SipHash, since the keys are short
-`&'static str` literals and not attacker-controlled. Together they moved 119k
-to ~140k frames/s and halved the memory per frame.
+`&'static str` literals and not attacker-controlled; a lookup went from 47 ns
+to 16 ns. Together they moved 190k to ~225k frames/s and halved memory.
 
 Closing the remaining gap means dissectors writing flat records directly
 through a builder on `Ctx` (`ctx.leaf(...)`, `ctx.begin(...)`/`ctx.end()`),
-which removes both the intermediate tree and the flatten pass. That changes
-the dissector signature from `-> Result<Node>` to `-> Result<()>`, and the
-brief fixes that signature as `(&[u8], &mut Ctx) -> Result<Node, DissectError>`.
-Changing a stated non-negotiable is the owner's call, so the measurement is
-reported here and the rewrite has not been taken unilaterally.
+which removes both the intermediate tree and the flatten pass — together about
+45% of the current cost. That changes the dissector signature from
+`-> Result<Node>` to `-> Result<()>`, and the brief fixes that signature as
+`(&[u8], &mut Ctx) -> Result<Node, DissectError>`. Changing a stated
+non-negotiable is the owner's call, so the measurement is reported here and
+the rewrite has not been taken unilaterally.
+
+Benchmarks are sensitive to machine load: the same binary measures 132-144k
+frames/s while sixteen fuzz targets are running. The figures above are from an
+otherwise idle machine, which is the number to compare against the target.
 
 ### Reassembled data is a second data source
 
