@@ -10,6 +10,7 @@ use crossbeam_channel::{Receiver, RecvTimeoutError};
 use netscope_ffi::LinkType;
 
 use crate::capture::RawFrame;
+use crate::dissect::Reassembly;
 use crate::store::Store;
 
 /// Largest batch appended under one store lock.
@@ -51,18 +52,29 @@ impl Worker {
 fn run(rx: Receiver<RawFrame>, store: Arc<Store>, link_type: LinkType, processed: Arc<AtomicU64>) {
     let mut next = store.next_number();
     let mut batch = Vec::with_capacity(BATCH);
+    let mut reassembly = Reassembly::new();
     loop {
         let first = match rx.recv_timeout(IDLE_POLL) {
             Ok(f) => f,
             Err(RecvTimeoutError::Timeout) => continue,
             Err(RecvTimeoutError::Disconnected) => break,
         };
-        batch.push(Arc::new(crate::dissect::dissect(link_type, next, first)));
+        batch.push(Arc::new(crate::dissect::dissect(
+            link_type,
+            next,
+            first,
+            &mut reassembly,
+        )));
         next = next.wrapping_add(1);
         while batch.len() < BATCH {
             match rx.try_recv() {
                 Ok(f) => {
-                    batch.push(Arc::new(crate::dissect::dissect(link_type, next, f)));
+                    batch.push(Arc::new(crate::dissect::dissect(
+                        link_type,
+                        next,
+                        f,
+                        &mut reassembly,
+                    )));
                     next = next.wrapping_add(1);
                 }
                 Err(_) => break,

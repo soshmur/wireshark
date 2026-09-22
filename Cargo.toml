@@ -1,5 +1,6 @@
 [workspace]
 members = ["ffi"]
+exclude = ["fuzz"]
 
 [package]
 name = "netscope"
@@ -18,6 +19,9 @@ crossbeam-channel = "0.5"
 directories = "5"
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
+
+[dev-dependencies]
+insta = "1"
 
 [profile.release]
 debug = 1

@@ -114,7 +114,7 @@ pub fn show(ui: &mut egui::Ui, snapshot: &Snapshot, mode: TimeMode, state: &mut 
                     ui.label(&frame.summary.destination);
                 });
                 row.col(|ui| {
-                    ui.label(frame.summary.protocol);
+                    ui.label(frame.summary.protocol_display());
                 });
                 row.col(|ui| {
                     ui.label(frame.orig_len.to_string());

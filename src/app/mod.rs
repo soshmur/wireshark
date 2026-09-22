@@ -1,6 +1,7 @@
 //! Stage 3: the UI thread. It renders from a store snapshot and issues
 //! start/stop; it never parses and never blocks on the capture pipeline.
 
+mod detail_tree;
 mod device_panel;
 mod first_run;
 mod hex_pane;
@@ -14,8 +15,18 @@ use std::time::{Duration, Instant};
 use crate::capture::{self, Capture, CaptureConfig, Device, Preflight, StatsSnapshot};
 use crate::config::{Config, TimeMode};
 use crate::dissect::worker::Worker;
+use crate::dissect::Frame;
 use crate::store::{Limits, Snapshot, Store, StoreStats};
+use detail_tree::TreeState;
+use hex_pane::HexState;
 use packet_list::{ListState, Nav};
+
+/// Which pane keyboard navigation applies to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Focus {
+    List,
+    Tree,
+}
 
 const REPAINT_INTERVAL: Duration = Duration::from_millis(100);
 
@@ -93,6 +104,9 @@ pub struct NetscopeApp {
     snapshot: Snapshot,
     store_stats: StoreStats,
     list: ListState,
+    tree: TreeState,
+    hex: HexState,
+    focus: Focus,
     show_first_run: bool,
     show_devices: bool,
     show_settings: bool,
@@ -130,6 +144,9 @@ impl NetscopeApp {
             store,
             show_devices: true,
             show_settings: false,
+            tree: TreeState::default(),
+            hex: HexState::default(),
+            focus: Focus::List,
             ui_frame_time: Duration::ZERO,
         };
         app.refresh_devices();
@@ -139,35 +156,16 @@ impl NetscopeApp {
         app
     }
 
-    /// Developer aid: fill the store with generated Ethernet-shaped frames.
+    /// Developer aid: fill the store with generated Ethernet/IPv4/TCP frames.
     fn preload_synthetic(&mut self, count: u64) {
         let mut batch = Vec::with_capacity(1024);
+        let mut reassembly = crate::dissect::Reassembly::new();
         for i in 0..count {
-            let len = 60 + (i % 1400) as usize;
-            let mut bytes = vec![0u8; len];
-            bytes[..6].copy_from_slice(&[0xff; 6]);
-            bytes[6..12].copy_from_slice(&[
-                0,
-                0x1c,
-                0x42,
-                (i >> 16) as u8,
-                (i >> 8) as u8,
-                i as u8,
-            ]);
-            bytes[12..14].copy_from_slice(&[0x08, 0x00]);
-            let raw = crate::capture::RawFrame {
-                ts: crate::capture::Timestamp {
-                    secs: 1_700_000_000 + (i / 1000) as i64,
-                    nanos: ((i % 1000) * 1_000_000) as u32,
-                },
-                caplen: len as u32,
-                orig_len: len as u32,
-                bytes: Arc::from(bytes),
-            };
             batch.push(Arc::new(crate::dissect::dissect(
                 netscope_ffi::LinkType::ETHERNET,
                 (i + 1) as u32,
-                raw,
+                crate::synthetic::raw_frame(i),
+                &mut reassembly,
             )));
             if batch.len() == 1024 {
                 self.store
@@ -278,31 +276,71 @@ impl NetscopeApp {
         }
     }
 
+    /// The frame currently selected in the list, if still held.
+    fn selected_frame(&self) -> Option<Arc<Frame>> {
+        self.list
+            .selected
+            .and_then(|n| self.snapshot.row_of(n))
+            .and_then(|r| self.snapshot.get(r))
+            .cloned()
+    }
+
     fn handle_keys(&mut self, ctx: &egui::Context) {
-        // Keys go to the list only when no text field owns the keyboard.
+        // Keys go to the panes only when no text field owns the keyboard.
         if ctx.memory(|m| m.focused().is_some()) || self.show_first_run {
             return;
         }
         let page = 20;
-        let nav = ctx.input(|i| {
-            if i.key_pressed(egui::Key::ArrowUp) {
-                Some(Nav::Up(1))
-            } else if i.key_pressed(egui::Key::ArrowDown) {
-                Some(Nav::Down(1))
-            } else if i.key_pressed(egui::Key::PageUp) {
-                Some(Nav::Up(page))
-            } else if i.key_pressed(egui::Key::PageDown) {
-                Some(Nav::Down(page))
-            } else if i.key_pressed(egui::Key::Home) {
-                Some(Nav::Home)
-            } else if i.key_pressed(egui::Key::End) {
-                Some(Nav::End)
-            } else {
-                None
-            }
+        let (up, down, page_up, page_down, home, end, enter) = ctx.input(|i| {
+            (
+                i.key_pressed(egui::Key::ArrowUp),
+                i.key_pressed(egui::Key::ArrowDown),
+                i.key_pressed(egui::Key::PageUp),
+                i.key_pressed(egui::Key::PageDown),
+                i.key_pressed(egui::Key::Home),
+                i.key_pressed(egui::Key::End),
+                i.key_pressed(egui::Key::Enter),
+            )
         });
-        if let Some(nav) = nav {
-            self.list.navigate(nav, &self.snapshot);
+        let frame = self.selected_frame();
+        if enter {
+            if let Some(f) = &frame {
+                self.tree.toggle_selected(f);
+            }
+            return;
+        }
+        match (self.focus, frame.as_deref()) {
+            (Focus::Tree, Some(f)) => {
+                if up {
+                    self.tree.navigate(f, -1);
+                } else if down {
+                    self.tree.navigate(f, 1);
+                } else if page_up {
+                    self.tree.navigate(f, -page);
+                } else if page_down {
+                    self.tree.navigate(f, page);
+                }
+            }
+            _ => {
+                let nav = if up {
+                    Some(Nav::Up(1))
+                } else if down {
+                    Some(Nav::Down(1))
+                } else if page_up {
+                    Some(Nav::Up(page as usize))
+                } else if page_down {
+                    Some(Nav::Down(page as usize))
+                } else if home {
+                    Some(Nav::Home)
+                } else if end {
+                    Some(Nav::End)
+                } else {
+                    None
+                };
+                if let Some(nav) = nav {
+                    self.list.navigate(nav, &self.snapshot);
+                }
+            }
         }
     }
 
@@ -574,24 +612,48 @@ impl eframe::App for NetscopeApp {
         egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
             self.status_bar(ui);
         });
+        let frame = self.selected_frame();
+        // The selected tree node drives the hex highlight.
+        self.hex.highlight = frame.as_ref().and_then(|f| {
+            self.tree
+                .selected
+                .and_then(|i| f.tree.get(i))
+                .filter(|n| !n.range().is_empty())
+                .map(|n| (n.source(), n.range()))
+        });
+        let mut hex_click = None;
         egui::TopBottomPanel::bottom("hex")
+            .resizable(true)
+            .default_height(200.0)
+            .min_height(60.0)
+            .show(ctx, |ui| {
+                hex_click = hex_pane::show(ui, frame.as_deref(), &mut self.hex);
+            });
+        egui::TopBottomPanel::bottom("detail")
             .resizable(true)
             .default_height(220.0)
             .min_height(60.0)
             .show(ctx, |ui| {
-                let frame = self
-                    .list
-                    .selected
-                    .and_then(|n| self.snapshot.row_of(n))
-                    .and_then(|r| self.snapshot.get(r))
-                    .map(Arc::as_ref);
-                hex_pane::show(ui, frame);
+                if detail_tree::show(ui, frame.as_deref(), &mut self.tree) {
+                    self.focus = Focus::Tree;
+                }
             });
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.add_enabled_ui(!self.show_first_run, |ui| {
+                let before = self.list.selected;
                 packet_list::show(ui, &self.snapshot, self.config.time_mode, &mut self.list);
+                if self.list.selected != before {
+                    self.focus = Focus::List;
+                }
             });
         });
+        // Clicking a byte selects the innermost node covering it.
+        if let (Some((source, offset)), Some(f)) = (hex_click, frame.as_deref()) {
+            if let Some(node) = f.tree.innermost_at(source, offset) {
+                self.tree.select_and_reveal(f, node.index());
+                self.focus = Focus::Tree;
+            }
+        }
 
         if self.show_devices && !self.show_first_run {
             self.devices_window(ctx);

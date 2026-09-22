@@ -76,25 +76,26 @@ fn main() {
     cap.stop();
     worker.join();
     let snap = store.snapshot();
-    for f in snap.iter().take(5) {
-        let head: Vec<String> = f
-            .bytes
-            .iter()
-            .take(16)
-            .map(|b| format!("{b:02x}"))
-            .collect();
+    for f in snap.iter().take(40) {
         println!(
-            "  #{} ts={}.{:09} len={} {} -> {} {} | {}",
+            "  #{:<4} {:<6} {:>5} {:<22} -> {:<22} {}",
             f.number,
-            f.ts.secs,
-            f.ts.nanos,
+            f.summary.protocol_display(),
             f.orig_len,
             f.summary.source,
             f.summary.destination,
-            f.summary.protocol,
-            head.join(" ")
+            f.summary.info
         );
     }
+    let mut by_proto: std::collections::BTreeMap<&str, usize> = Default::default();
+    let mut malformed = 0;
+    for f in snap.iter() {
+        *by_proto.entry(f.summary.protocol_display()).or_default() += 1;
+        if f.tree.iter().any(|n| n.abbrev() == "_ws.malformed") {
+            malformed += 1;
+        }
+    }
+    println!("by protocol: {by_proto:?}; frames with a malformed node: {malformed}");
     let consumed = snap.len();
     let s = cap.stats();
     println!(

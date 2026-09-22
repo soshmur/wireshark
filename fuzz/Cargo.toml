@@ -1,0 +1,127 @@
+[package]
+name = "netscope-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+build = "build.rs"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+netscope = { path = ".." }
+netscope-ffi = { path = "../ffi" }
+
+[[bin]]
+name = "eth"
+path = "fuzz_targets/eth.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "vlan"
+path = "fuzz_targets/vlan.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "llc"
+path = "fuzz_targets/llc.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "arp"
+path = "fuzz_targets/arp.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ipv4"
+path = "fuzz_targets/ipv4.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ipv6"
+path = "fuzz_targets/ipv6.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "icmp"
+path = "fuzz_targets/icmp.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "icmpv6"
+path = "fuzz_targets/icmpv6.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "udp"
+path = "fuzz_targets/udp.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "tcp"
+path = "fuzz_targets/tcp.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "dns"
+path = "fuzz_targets/dns.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "dhcp"
+path = "fuzz_targets/dhcp.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "http"
+path = "fuzz_targets/http.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "tls"
+path = "fuzz_targets/tls.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "frame"
+path = "fuzz_targets/frame.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "pcapng"
+path = "fuzz_targets/pcapng.rs"
+test = false
+doc = false
+bench = false

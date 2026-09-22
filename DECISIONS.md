@@ -109,3 +109,114 @@ benchmark the stub tree alone costs ~1 KB per frame on top of the payload,
 because labels are pre-formatted `String`s. This is the number to watch in
 Phase 2: if real dissectors push it past the 500k frames/s target, labels will
 become lazy (formatted on display from `Value`) rather than eager.
+
+## Phase 2
+
+### Labels are formatted on demand, not stored
+
+The Phase 1 benchmark showed pre-formatted label strings dominating both
+dissection time and memory. Nodes now carry only a field id, a typed value and
+a byte range; `registry::label` formats the text when a row is drawn. The
+registry is therefore the single owner of field names, value symbolics and
+number bases, which is also what the display filter needs. Nodes that need
+free text (malformed reasons, option summaries, TLS extension detail) keep it
+in an optional `text`, and protocol-layer summaries ("TCP, Src Port: 443, ...")
+are rendered from templates over child values so no string is built per layer.
+
+### The stored tree is flat
+
+Dissectors still return the spec's `Node` pointer tree; it is the natural
+shape to build. What the store keeps is `Tree`: the same nodes flattened
+depth-first into one array of 28-byte records plus a byte arena for strings.
+A TCP frame has ~66 nodes; at 104 bytes per `Node` plus a heap allocation per
+child vector that was 8.5 KB and hundreds of allocations per frame, which
+paged the machine at 1e6 frames. Flat: ~1.9 KB per frame, two allocations.
+Structure (children, ancestors) is recovered from `depth`, which is cheap for
+a tree that is only ever walked top-down.
+
+### Measured throughput and the remaining gap
+
+Ethernet/IPv4/TCP path, single thread, release, this machine: 132-144k
+frames/s (7.0-7.7 µs/frame) for a 66-node tree, at 3.0 KB accounted per
+frame. The target is 500k/s/core, so this misses by roughly 3.5x.
+
+Where the time goes, measured per frame: `tcp::dissect` 2.5 µs,
+`ipv4::dissect` 1.4 µs, `eth::dissect` 0.3 µs, `Tree::from_layers` 1.5 µs.
+The dissectors cost about 85 ns per node produced, dominated by building the
+intermediate `Node` tree: a 104-byte record moved into a child `Vec`, an
+allocation for every parent that has children, and then a second pass to
+flatten it.
+
+Two contained wins were taken. Checksum status became a numeric enum field
+instead of an allocated `String` (five allocations per frame), and the
+field-id index uses FNV-1a rather than SipHash, since the keys are short
+`&'static str` literals and not attacker-controlled. Together they moved 119k
+to ~140k frames/s and halved the memory per frame.
+
+Closing the remaining gap means dissectors writing flat records directly
+through a builder on `Ctx` (`ctx.leaf(...)`, `ctx.begin(...)`/`ctx.end()`),
+which removes both the intermediate tree and the flatten pass. That changes
+the dissector signature from `-> Result<Node>` to `-> Result<()>`, and the
+brief fixes that signature as `(&[u8], &mut Ctx) -> Result<Node, DissectError>`.
+Changing a stated non-negotiable is the owner's call, so the measurement is
+reported here and the rewrite has not been taken unilaterally.
+
+### Reassembled data is a second data source
+
+Node ranges index a data source; source 0 is the captured frame and
+reassembly registers further sources. The IPv4 reassembly node and every
+node dissected from the reassembled datagram carry `source = 1`, the hex pane
+shows a tab per source, and highlighting stays exact. The alternative — a
+"virtual" range space — would have broken the byte-range invariant the hex
+pane and filter engine rely on.
+
+### DNS compression: strictly backward pointers plus a hop cap
+
+A pointer must target an offset before the pointer itself. That alone makes
+loops impossible (the offset decreases monotonically); a hop limit of 32 is
+kept as a second guard. Forward pointers are rejected as malformed, which
+matches how the major resolvers behave and what RFC 1035 §4.1.4 ("a prior
+occurrence") describes.
+
+### Checksums are verified and reported, never used to reject
+
+IPv4/ICMP/ICMPv6/TCP/UDP checksums are computed and shown as Good/Bad/
+Unverified (truncated segments and ICMP-quoted headers are Unverified). On the
+capturing host, offload makes outgoing checksums wrong before the NIC fixes
+them, so Bad is informational; the Phase 4 expert flag will be a preference.
+
+### Layer nodes cover their header, not their payload
+
+A protocol layer's range is the bytes that layer decodes: `tcp` covers its
+header, and the payload appears as the next layer (`http`, `tls`, `data`)
+which is a sibling, not a child. Selecting the TCP row therefore highlights
+the TCP header rather than the whole segment. The consequence is that
+`tcp.payload` and `udp.payload` are filter-only fields with no tree row of
+their own; Phase 3 derives their bytes from the layer's extent. Bytes that no
+layer claimed (Ethernet padding, an 802.3 trailer) are accounted for once by
+the driver, which is the only place that sees the whole frame.
+
+An invariant test enforces the resulting structure over every fixture frame,
+every truncation of every fixture frame, and single-byte corruptions at every
+offset of the first frames: a node's range lies inside its data source, and a
+child's range lies inside its parent's when they share a source. Writing that
+test found four places where a node hung off a layer whose range did not cover
+it (ARP and IPv4 padding, the IPv4 fragment note, UDP/TCP payload markers) and
+one where a DNS section did not extend over a trailing malformed record.
+
+### One dissection worker, numbering before dissection
+
+Frame numbers are assigned by the thread that dequeues from the capture
+channel, so parallel dissection (when it comes) cannot reorder them. IPv4
+reassembly state lives in that worker; parallelising later means sharding
+by flow, which the `FragKey` already supports.
+
+### Fuzzing found an integer-overflow class the tests did not
+
+`cargo-fuzz` builds with debug assertions on, so arithmetic that silently
+wraps in release panics under the fuzzer. It found `len * 8` and `len + 2`
+computed on `u8` values read straight from the packet (ICMPv6 option length,
+IPv6 option length) — a length byte above 31 was enough. Those are now widened
+before the arithmetic. The lesson is kept as a rule: any value read from a
+packet is widened to `usize`/`u64` before it takes part in arithmetic, even
+when the result is only used to format a label.

@@ -267,10 +267,11 @@ impl Snapshot {
 mod tests {
     use super::*;
     use crate::capture::RawFrame;
-    use crate::dissect::dissect;
+    use crate::dissect::{dissect, Reassembly};
     use netscope_ffi::LinkType;
 
     fn frame(n: u32, len: usize) -> Arc<Frame> {
+        let mut reassembly = Reassembly::new();
         Arc::new(dissect(
             LinkType::ETHERNET,
             n,
@@ -283,6 +284,7 @@ mod tests {
                 orig_len: len as u32,
                 bytes: Arc::from(vec![0u8; len]),
             },
+            &mut reassembly,
         ))
     }
 
