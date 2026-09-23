@@ -142,8 +142,10 @@ fn ipv4_fixture() -> Fixture {
     let frag2 = frag(16, true, &udp_whole[16..32]);
     let frag1 = frag(0, true, &udp_whole[..16]);
     let frag3 = frag(32, false, &udp_whole[32..]);
-    // Unreachable carrying the offending header.
-    let inner = ipv4(IP_B, IP_A, 17, &udp4(IP_B, IP_A, 5000, 4000, &[1, 2, 3, 4]));
+    // Unreachable carrying the offending header. A real ICMP error quotes the
+    // datagram that caused it, which travelled the other way: the host sent
+    // IP_A -> IP_B, and the error comes back IP_B -> IP_A.
+    let inner = ipv4(IP_A, IP_B, 17, &udp4(IP_A, IP_B, 4000, 5000, &[1, 2, 3, 4]));
     let mut rest = vec![0, 0, 0, 0];
     rest.extend_from_slice(&inner[..28]);
     let unreach = eth(
