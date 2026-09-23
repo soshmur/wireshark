@@ -1099,7 +1099,14 @@ thread_local! {
 }
 
 fn memo_slot(abbrev: &'static str) -> usize {
-    (abbrev.as_ptr() as usize >> 3) & (MEMO_SLOTS - 1)
+    // Multiply-shift rather than a raw shift: string literals sit packed and
+    // roughly contiguous in .rodata, so `ptr >> 3` maps whole neighbourhoods
+    // of abbrevs onto the same slots, and which of the hot fields collide
+    // then depends on link order. Adding a registry entry reshuffled it and
+    // cost ~3% of dissection throughput. Mixing the whole pointer makes the
+    // distribution independent of layout.
+    let h = (abbrev.as_ptr() as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    ((h >> 40) as usize) & (MEMO_SLOTS - 1)
 }
 
 /// Stable numeric id for a field abbrev.

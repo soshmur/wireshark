@@ -450,3 +450,37 @@ they can predict the answer to.
 
 Before the fixes both targets died in seconds, at 571 and 829 edges; the
 coverage roughly doubled once they could run to completion.
+
+### The field-id memo was keyed on where the linker happened to put things
+
+Phase 3 measured ~3% slower at dissection than Phase 2 â 539k frames/s against
+556k, ten alternating runs of the two builds all in the same direction, so not
+thermal drift and not run order. The only change under `src/dissect` was
+`FieldDef` gaining a `members` slice and five alias entries, none of which the
+dissectors touch.
+
+The cause was the memo in front of `field_id`. It is direct-mapped on
+`(ptr >> 3) & 511`, which was fine in isolation: abbrevs are `&'static str`
+literals, so the same field is the same pointer. But literals sit packed and
+roughly contiguous in `.rodata`, so shifting by three maps whole
+neighbourhoods of abbrevs onto the same slots, and *which* of the 65 hot
+fields in a frame collide is then decided by link order. Adding five strings
+reshuffled it into a worse arrangement.
+
+`memo_slot` now multiplies the pointer by a 64-bit odd constant and takes
+high bits, which mixes the whole address instead of one byte-range of it.
+Dissection went to 561-577k frames/s, at or slightly above the Phase 2
+figures on the same machine in the same session, and the whole-frame
+microbenchmark from 1925 ns to 1766 ns.
+
+The lesson is not about the constant. It is that a cache keyed on an address
+has a hit rate decided by the linker, so it will drift for reasons that have
+nothing to do with the change in front of you. Measuring the old commit and
+the new one alternately, on the same machine in the same session, is what
+separated a real 3% from the 460k-540k spread the same binary produces
+depending on how warm the machine is.
+
+Reported honestly: the 538-559k figure quoted at the end of Phase 2 is a
+burst number. Sustained over repeated runs on a warm machine this laptop
+gives roughly 460-540k for that build. The target in the brief is 500k
+frames/s/core, and on the current build the same measurement gives 541-577k.
