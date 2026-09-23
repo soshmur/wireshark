@@ -46,10 +46,34 @@ pub struct FieldDef {
     pub abbrev: &'static str,
     pub name: &'static str,
     pub kind: Kind,
+    /// Fields this one stands for in a display filter. `ip.addr` matches
+    /// either `ip.src` or `ip.dst`; the field itself is never emitted as a
+    /// tree row.
+    pub members: &'static [&'static str],
 }
 
 const fn f(abbrev: &'static str, name: &'static str, kind: Kind) -> FieldDef {
-    FieldDef { abbrev, name, kind }
+    FieldDef {
+        abbrev,
+        name,
+        kind,
+        members: &[],
+    }
+}
+
+/// An alias: a filter-only name matching any of several real fields.
+const fn alias(
+    abbrev: &'static str,
+    name: &'static str,
+    kind: Kind,
+    members: &'static [&'static str],
+) -> FieldDef {
+    FieldDef {
+        abbrev,
+        name,
+        kind,
+        members,
+    }
 }
 
 // ---- value name tables ---------------------------------------------------
@@ -407,6 +431,12 @@ pub static FIELDS: &[FieldDef] = &[
     f("null.family", "Family", Unsigned(Dec)),
     // ethernet
     f("eth", "Ethernet II", Protocol),
+    alias(
+        "eth.addr",
+        "Source or Destination",
+        Mac,
+        &["eth.src", "eth.dst"],
+    ),
     f("eth.dst", "Destination", Mac),
     f("eth.src", "Source", Mac),
     f("eth.type", "Type", Enum(ETHERTYPES, Hex)),
@@ -435,6 +465,12 @@ pub static FIELDS: &[FieldDef] = &[
     f("arp.proto.size", "Protocol size", Unsigned(Dec)),
     f("arp.opcode", "Opcode", Enum(ARP_OPCODES, Dec)),
     f("arp.src.hw_mac", "Sender MAC address", Mac),
+    alias(
+        "arp.addr",
+        "Sender or Target IP address",
+        Ipv4,
+        &["arp.src.proto_ipv4", "arp.dst.proto_ipv4"],
+    ),
     f("arp.src.proto_ipv4", "Sender IP address", Ipv4),
     f("arp.dst.hw_mac", "Target MAC address", Mac),
     f("arp.dst.proto_ipv4", "Target IP address", Ipv4),
@@ -473,6 +509,12 @@ pub static FIELDS: &[FieldDef] = &[
         "Header checksum status",
         Enum(CHECKSUM_STATUS, Base::Name),
     ),
+    alias(
+        "ip.addr",
+        "Source or Destination Address",
+        Ipv4,
+        &["ip.src", "ip.dst"],
+    ),
     f("ip.src", "Source Address", Ipv4),
     f("ip.dst", "Destination Address", Ipv4),
     f("ip.options", "Options", Group),
@@ -501,6 +543,12 @@ pub static FIELDS: &[FieldDef] = &[
     f("ipv6.plen", "Payload Length", Unsigned(Dec)),
     f("ipv6.nxt", "Next Header", Enum(IPPROTOS, Dec)),
     f("ipv6.hlim", "Hop Limit", Unsigned(Dec)),
+    alias(
+        "ipv6.addr",
+        "Source or Destination Address",
+        Ipv6,
+        &["ipv6.src", "ipv6.dst"],
+    ),
     f("ipv6.src", "Source Address", Ipv6),
     f("ipv6.dst", "Destination Address", Ipv6),
     f("ipv6.hopopts", "Hop-by-Hop Options", Group),
@@ -618,7 +666,12 @@ pub static FIELDS: &[FieldDef] = &[
     f("udp", "User Datagram Protocol", Protocol),
     f("udp.srcport", "Source Port", Unsigned(Dec)),
     f("udp.dstport", "Destination Port", Unsigned(Dec)),
-    f("udp.port", "Port", Unsigned(Dec)),
+    alias(
+        "udp.port",
+        "Port",
+        Unsigned(Dec),
+        &["udp.srcport", "udp.dstport"],
+    ),
     f("udp.length", "Length", Unsigned(Dec)),
     f("udp.checksum", "Checksum", Unsigned(Hex)),
     f(
@@ -631,7 +684,12 @@ pub static FIELDS: &[FieldDef] = &[
     f("tcp", "Transmission Control Protocol", Protocol),
     f("tcp.srcport", "Source Port", Unsigned(Dec)),
     f("tcp.dstport", "Destination Port", Unsigned(Dec)),
-    f("tcp.port", "Port", Unsigned(Dec)),
+    alias(
+        "tcp.port",
+        "Port",
+        Unsigned(Dec),
+        &["tcp.srcport", "tcp.dstport"],
+    ),
     f("tcp.len", "TCP Segment Len", Unsigned(Dec)),
     f("tcp.seq", "Sequence Number (raw)", Unsigned(Dec)),
     f("tcp.ack", "Acknowledgment Number (raw)", Unsigned(Dec)),
@@ -1111,6 +1169,49 @@ pub fn lookup(abbrev: &str) -> Option<&'static FieldDef> {
 /// All field definitions, for completion.
 pub fn all() -> &'static [FieldDef] {
     FIELDS
+}
+
+/// The registered field name closest to `name`, for "did you mean" hints.
+/// Uses edit distance capped at a third of the name length, so a typo is
+/// suggested but an unrelated name is not.
+pub fn closest(name: &str) -> Option<&'static str> {
+    let budget = (name.len() / 3).clamp(1, 4);
+    let mut best: Option<(usize, &'static str)> = None;
+    for d in FIELDS {
+        let dist = edit_distance(name, d.abbrev, budget);
+        if let Some(dist) = dist {
+            if best.is_none_or(|(b, _)| dist < b) {
+                best = Some((dist, d.abbrev));
+            }
+        }
+    }
+    best.map(|(_, name)| name)
+}
+
+/// Levenshtein distance, abandoning once it exceeds `budget`.
+fn edit_distance(a: &str, b: &str, budget: usize) -> Option<usize> {
+    if a.len().abs_diff(b.len()) > budget {
+        return None;
+    }
+    let a: Vec<u8> = a.bytes().collect();
+    let b: Vec<u8> = b.bytes().collect();
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    let mut cur = vec![0usize; b.len() + 1];
+    for (i, &ca) in a.iter().enumerate() {
+        cur[0] = i + 1;
+        let mut row_best = cur[0];
+        for (j, &cb) in b.iter().enumerate() {
+            let cost = usize::from(ca != cb);
+            cur[j + 1] = (prev[j] + cost).min(prev[j + 1] + 1).min(cur[j] + 1);
+            row_best = row_best.min(cur[j + 1]);
+        }
+        if row_best > budget {
+            return None;
+        }
+        std::mem::swap(&mut prev, &mut cur);
+    }
+    let dist = prev[b.len()];
+    (dist <= budget).then_some(dist)
 }
 
 /// Symbolic name for `value` in `table`.

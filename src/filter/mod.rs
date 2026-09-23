@@ -7,7 +7,9 @@
 pub mod ast;
 pub mod lex;
 pub mod parse;
+pub mod types;
 
 pub use ast::{CmpOp, Expr, FieldRef, Literal, Slice};
 pub use lex::{FilterError, Result};
 pub use parse::parse;
+pub use types::{compile, Operand, Target, Test};
