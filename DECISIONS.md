@@ -261,6 +261,84 @@ genuinely malformed. `examples/find_malformed.rs` exists for exactly that.
 
 ## Phase 3 — the display filter language
 
+### The filter reads the stored tree; it never re-dissects
+
+A display filter is compiled to a `Test` tree and evaluated against the
+`Node` records already in the store. Every node carries the byte range it was
+decoded from, which is what makes this possible: a field comparison is a walk
+to the matching nodes and a read of their bytes, not a re-parse of the frame.
+`View::filtered` therefore holds the very same `Arc<Frame>`s the store does,
+which `store::view::filtering_does_not_redissect` asserts by pointer
+identity rather than by value, because value equality would still pass if the
+frames had been rebuilt.
+
+The alternative â re-running the dissectors under the filter, the way a
+capture-time filter must â would make every keystroke in the filter bar cost
+a full pass over the capture, and would mean a filter could disagree with the
+detail tree the user is looking at.
+
+### Repeated fields match if any occurrence matches
+
+`ip.addr` in a tunnelled packet, `dns.a` in a multi-answer response and
+`tcp.option.kind` in almost any segment all occur more than once in a frame.
+A comparison against such a field succeeds if **any** occurrence satisfies
+it, which is what Wireshark does.
+
+This is worth stating plainly because it makes `!=` asymmetric with `==` in
+a way that surprises people: `ip.addr != 10.0.0.1` reads as "no address is
+10.0.0.1" and means "some address is not 10.0.0.1", which is true of almost
+every packet. Matching Wireshark was chosen over being locally more logical,
+because a filter language whose operators read the same but mean something
+different from the tool everyone already knows is worse than one with a
+documented quirk. The quirk is documented in the README, with `!(ip.addr ==
+10.0.0.1)` given as the way to say the other thing.
+
+### One registry entry can stand for several fields
+
+`ip.addr`, `ipv6.addr`, `eth.addr`, `arp.addr`, `tcp.port` and `udp.port`
+have no nodes of their own â no dissector ever writes one. They are registry
+entries carrying `members: &["ip.src", "ip.dst"]`, and the type checker
+resolves them to the set of real field ids before the evaluator ever runs.
+
+Keeping them in the registry rather than special-casing them in the compiler
+preserves the rule that the registry is the only place field knowledge lives:
+they complete in the filter bar, they report their kind in a type error, and
+`every_registered_field_can_be_compiled` covers them like anything else.
+
+### `contains` on a protocol searches its payload, not its header
+
+Layer nodes cover their own header only â `tcp` is 20 bytes plus options, not
+the segment. That is right for the hex pane and for `tcp.len`, but it makes
+`tcp contains "GET"` find nothing, which is not what anyone typing it means.
+
+So when the target is a protocol and no slice is given, the evaluator searches
+from the layer's start to the end of its data source: header and everything
+after it, in whichever buffer that layer was dissected from. A slice on a
+protocol still reads the header, because `ip[0:1]` is asking about the header
+by construction.
+
+### `matches` uses the `regex` crate
+
+The `regex` crate is the one dependency in the project that parses something
+on behalf of a user. It was allowed deliberately: writing a regex engine is
+not what this project is about, the crate has no backtracking and so no
+catastrophic-blowup class of failure on hostile patterns, and a pattern that
+does not compile is reported with the same column-carrying error type as the
+rest of the language rather than as a panic. Patterns are compiled once at
+filter-compile time and reused for every frame.
+
+The ban on parsing crates in the brief is about protocol dissection, which
+remains entirely hand-written.
+
+### Type errors are reported when the filter compiles
+
+`tcp.port == "http"` fails at compile time with the column of the literal and
+the kinds that would have been accepted, not at evaluation time on frame
+600,000. This is the reason the pipeline has a distinct type-check pass
+between the AST and the evaluator at all: the evaluator is total, every
+`Test` it can be handed is one whose operand kinds already agree, and it has
+no error path to take in the middle of a pass over a million frames.
+
 ### Colour rules are display filters, and nothing else
 
 A colour rule is a `(name, display filter, background, foreground)` tuple,
