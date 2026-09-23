@@ -5,6 +5,8 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use crate::app::colour_rules::{self, Rule};
+
 /// How the packet list's time column is rendered.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub enum TimeMode {
@@ -35,6 +37,11 @@ pub struct Config {
     pub time_mode: TimeMode,
     /// Keep the packet list scrolled to the newest frame while capturing.
     pub auto_scroll: bool,
+    /// Colour packet-list rows by the rules below.
+    pub colouring: bool,
+    /// Colour rules, in priority order: the first whose display filter
+    /// matches a frame colours its row.
+    pub colour_rules: Vec<Rule>,
 }
 
 impl Default for Config {
@@ -49,6 +56,8 @@ impl Default for Config {
             ring_max_bytes: 2 * 1024 * 1024 * 1024,
             time_mode: TimeMode::SinceStart,
             auto_scroll: true,
+            colouring: true,
+            colour_rules: colour_rules::defaults(),
         }
     }
 }
@@ -112,6 +121,8 @@ mod tests {
             ring_max_bytes: 20,
             time_mode: TimeMode::DeltaPrevious,
             auto_scroll: false,
+            colouring: false,
+            colour_rules: colour_rules::defaults(),
         };
         let text = toml::to_string_pretty(&cfg).expect("serialise");
         let back: Config = toml::from_str(&text).expect("parse");
@@ -125,5 +136,16 @@ mod tests {
         assert_eq!(back.snaplen, Config::default().snaplen);
         assert_eq!(back.ring_max_frames, 1_000_000);
         assert_eq!(back.time_mode, TimeMode::SinceStart);
+        assert!(back.colouring);
+        assert_eq!(back.colour_rules, colour_rules::defaults());
+    }
+
+    #[test]
+    fn colour_rules_round_trip() {
+        let cfg = Config::default();
+        let text = toml::to_string_pretty(&cfg).expect("serialise");
+        let back: Config = toml::from_str(&text).expect("parse");
+        assert_eq!(cfg.colour_rules, back.colour_rules);
+        assert!(!back.colour_rules.is_empty());
     }
 }

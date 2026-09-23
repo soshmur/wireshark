@@ -258,3 +258,48 @@ reported. It took traffic from a real NIC on a real host.
 The rule taken from it: every phase gets a live run against real traffic, and
 any frame carrying a `[Malformed]` node is triaged rather than assumed to be
 genuinely malformed. `examples/find_malformed.rs` exists for exactly that.
+
+## Phase 3 — the display filter language
+
+### Colour rules are display filters, and nothing else
+
+A colour rule is a `(name, display filter, background, foreground)` tuple,
+and the first enabled rule that matches a frame colours its row. There is no
+separate matching language, no protocol-name special case and no hard-coded
+list: `defaults()` in `src/app/colour_rules.rs` is twelve strings that go
+through the same lexer, parser, type checker and evaluator as anything typed
+into the filter bar.
+
+That is what makes them worth having in Phase 3 rather than Phase 1. It also
+means a rule that does not compile is a first-class, reportable state: the
+editor shows the message and the column beneath the offending rule, and
+`Rules::matching` skips it rather than failing the frame, so one bad rule
+does not stop the other eleven colouring.
+
+Ordering is the whole design. Most frames match several rules — a DNS query
+is also UDP, also IP, also Ethernet — so the rule list is a priority list
+read top to bottom, and "Bad checksum" sits above the protocol rules
+precisely so a broken packet does not hide behind being TCP. The tests in
+`tests/filter.rs` assert *which* rule claims each frame of each fixture, not
+merely that one does, because the ordering is the part that can silently
+regress.
+
+A selected row keeps the selection highlight instead of its rule colour.
+Painting both would mean the user cannot tell what is selected, and the
+selection is the more urgent piece of information.
+
+### Writing the colour rules found a third fixture bug
+
+The rules were run over the checked-in fixtures to see which claimed what,
+and the first DNS frame came back "Bad checksum". The query frame was built
+with `eth_ipv4`, which writes an `IP_A -> IP_B` header, while its UDP
+checksum had been computed over a pseudo-header addressed to the resolver at
+192.168.1.1. The checksum was correct for a datagram the frame did not
+contain.
+
+This is the same class as the ICMP fixture bug found while writing the filter
+expectations: a hand-built fixture that is internally inconsistent in a way
+no dissector can object to, because each field is individually well-formed.
+The general lesson is that a new way of *reading* the fixtures is also a new
+way of checking them, and is worth running over the whole corpus once as soon
+as it works.

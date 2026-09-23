@@ -408,7 +408,19 @@ fn tcp_udp_fixture() -> Fixture {
 fn dns_fixture() -> Fixture {
     let q = dns_question(&dns_name("www.example.com"), 1, 1);
     let query = [dns_header(0x1a2b, 0x0100, 1, 0, 0, 0), q.clone()].concat();
-    let query_frame = eth_ipv4(17, &udp4(IP_A, [192, 168, 1, 1], 53123, 53, &query));
+    // The IP header must carry the same destination the UDP pseudo-header
+    // was computed over, or the checksum is wrong for the frame as built.
+    let query_frame = eth(
+        MAC_B,
+        MAC_A,
+        0x0800,
+        &ipv4(
+            IP_A,
+            [192, 168, 1, 1],
+            17,
+            &udp4(IP_A, [192, 168, 1, 1], 53123, 53, &query),
+        ),
+    );
     // Response: CNAME to a compressed name, then A for the target, all using pointers.
     let mut resp = dns_header(0x1a2b, 0x8180, 1, 2, 0, 0);
     resp.extend_from_slice(&q);

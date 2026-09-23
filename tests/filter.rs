@@ -459,3 +459,138 @@ fn every_registered_field_can_be_compiled() {
     }
     assert!(failures.is_empty(), "{failures:#?}");
 }
+
+/// The default colour rules are display filters, so they belong in this
+/// suite. What they assert is *ordering*: the first match wins and most
+/// frames match several rules, so the interesting property is which one
+/// claims each frame, not whether any does.
+mod colour_rules {
+    use super::load;
+    use netscope::app::colour_rules::{defaults, Rules};
+
+    /// The name of the rule that claims each frame, or `-` for none.
+    #[track_caller]
+    fn expect_claims(fixture: &str, want: &[&str]) {
+        let rules = Rules::new(defaults());
+        let got: Vec<&str> = load(fixture)
+            .iter()
+            .map(|f| match rules.matching(f) {
+                Some(i) => rules.rules()[i].name.as_str(),
+                None => "-",
+            })
+            .collect();
+        assert_eq!(got, want, "colour rules claimed the wrong frames in {fixture}");
+    }
+
+    #[test]
+    fn every_default_rule_compiles() {
+        let rules = Rules::new(defaults());
+        for (i, rule) in rules.rules().iter().enumerate() {
+            assert!(
+                rules.error(i).is_none(),
+                "default rule `{}` (`{}`) does not compile: {:?}",
+                rule.name,
+                rule.filter,
+                rules.error(i)
+            );
+        }
+    }
+
+    #[test]
+    fn link_layer_frames_are_claimed_by_their_innermost_protocol() {
+        // Frames 5 and 7 are VLAN and LLC/SNAP carrying ICMP, so the ICMP
+        // rule claims them ahead of anything link-layer. Frames 8-11 are
+        // LLC without an IP payload and match no rule at all.
+        expect_claims(
+            "link_layer",
+            &[
+                "ARP", "ARP", "ARP", "ARP", "ICMP", "ARP", "ICMP", "-", "-", "-", "-", "ARP",
+            ],
+        );
+    }
+
+    #[test]
+    fn a_bad_checksum_outranks_the_protocol() {
+        // Frame 3 has a deliberately wrong IPv4 header checksum; without the
+        // checksum rule sitting above them, ICMP would have claimed it.
+        // Frames 4, 5 and 12 are fragments with no transport layer to name.
+        expect_claims(
+            "ipv4",
+            &[
+                "ICMP",
+                "ICMP",
+                "Bad checksum",
+                "-",
+                "-",
+                "UDP",
+                "ICMP",
+                "ICMP",
+                "ICMP",
+                "ICMP",
+                "ICMP",
+                "-",
+                "TLS",
+            ],
+        );
+    }
+
+    #[test]
+    fn handshake_and_reset_outrank_plain_tcp() {
+        expect_claims(
+            "tcp_udp",
+            &[
+                "TCP handshake",
+                "TCP handshake",
+                "TCP",
+                "TCP",
+                "TCP reset",
+                "TCP",
+                "TCP",
+                "TCP reset",
+                "TCP",
+                "UDP",
+                "UDP",
+            ],
+        );
+    }
+
+    #[test]
+    fn dns_outranks_the_udp_carrying_it() {
+        expect_claims("dns", &["DNS", "DNS", "DNS", "DNS", "DNS", "DNS"]);
+    }
+
+    #[test]
+    fn malformed_outranks_everything() {
+        // Frame 4 is a well-formed segment and frame 17 a well-formed TLS
+        // record; every other frame in this fixture fails to dissect
+        // somewhere and the malformed rule takes it.
+        let rules = Rules::new(defaults());
+        let frames = load("malformed");
+        let claimed: Vec<&str> = frames
+            .iter()
+            .map(|f| match rules.matching(f) {
+                Some(i) => rules.rules()[i].name.as_str(),
+                None => "-",
+            })
+            .collect();
+        assert_eq!(claimed[3], "TCP");
+        assert_eq!(claimed[16], "TLS");
+        for (i, name) in claimed.iter().enumerate() {
+            if i != 3 && i != 16 {
+                assert_eq!(*name, "Malformed", "frame {} of malformed", i + 1);
+            }
+        }
+    }
+
+    #[test]
+    fn a_disabled_rule_hands_the_frame_to_the_next_one() {
+        let mut rules = Rules::new(defaults());
+        let frames = load("dns");
+        assert_eq!(rules.rules()[rules.matching(&frames[1]).expect("rule")].name, "DNS");
+        let dns = rules.matching(&frames[1]).expect("rule");
+        rules.rules_mut()[dns].enabled = false;
+        rules.recompile();
+        let next = rules.matching(&frames[1]).expect("rule");
+        assert_eq!(rules.rules()[next].name, "UDP");
+    }
+}

@@ -2,7 +2,7 @@
 source: tests/snapshots.rs
 expression: text
 ---
-#1 192.168.1.10 -> 93.184.216.34 dns | Standard query 0x1a2b A www.example.com
+#1 192.168.1.10 -> 192.168.1.1 dns | Standard query 0x1a2b A www.example.com
   Frame 1: 75 bytes on wire, 75 bytes captured  [frame 0:0-75]
     Frame Number: 1  [frame.number 0:0-0]
     Epoch Time: 1700000000.000123456  [frame.time_epoch 0:0-0]
@@ -14,7 +14,7 @@ expression: text
     Destination: 66:77:88:99:aa:bb  [eth.dst 0:0-6]
     Source: 00:11:22:33:44:55  [eth.src 0:6-12]
     Type: IPv4 (0x0800)  [eth.type 0:12-14]
-  Internet Protocol Version 4, Src: 192.168.1.10, Dst: 93.184.216.34  [ip 0:14-34]
+  Internet Protocol Version 4, Src: 192.168.1.10, Dst: 192.168.1.1  [ip 0:14-34]
     Version: 4  [ip.version 0:14-15]
     Header Length: 20  [ip.hdr_len 0:14-15]
     Differentiated Services Field: 0x00  [ip.dsfield 0:15-16]
@@ -29,16 +29,16 @@ expression: text
     Fragment Offset: 0  [ip.frag_offset 0:20-22]
     Time to Live: 64  [ip.ttl 0:22-23]
     Protocol: UDP (17)  [ip.proto 0:23-24]
-    Header Checksum: 0x30ef  [ip.checksum 0:24-26]
+    Header Checksum: 0xa520  [ip.checksum 0:24-26]
     Header checksum status: Good  [ip.checksum.status 0:24-26]
     Source Address: 192.168.1.10  [ip.src 0:26-30]
-    Destination Address: 93.184.216.34  [ip.dst 0:30-34]
+    Destination Address: 192.168.1.1  [ip.dst 0:30-34]
   User Datagram Protocol, Src Port: 53123, Dst Port: 53  [udp 0:34-42]
     Source Port: 53123  [udp.srcport 0:34-36]
     Destination Port: 53  [udp.dstport 0:36-38]
     Length: 41  [udp.length 0:38-40]
     Checksum: 0x4800  [udp.checksum 0:40-42]
-    Checksum Status: Bad  [udp.checksum.status 0:40-42]
+    Checksum Status: Good  [udp.checksum.status 0:40-42]
   Domain Name System (query)  [dns 0:42-75]
     Transaction ID: 0x1a2b  [dns.id 0:42-44]
     Flags: 0x0100 Standard query  [dns.flags 0:44-46]

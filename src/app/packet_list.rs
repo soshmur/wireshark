@@ -1,8 +1,9 @@
 //! The virtualised packet list. Only visible rows are laid out, so a million
 //! rows cost the same as fifty.
 
-use egui_extras::{Column, TableBuilder};
+use egui_extras::{Column, TableBuilder, TableRow};
 
+use super::colour_rules::{RowColours, Rules};
 use super::timefmt;
 use crate::config::TimeMode;
 use crate::store::View;
@@ -51,7 +52,32 @@ impl ListState {
     }
 }
 
-pub fn show(ui: &mut egui::Ui, view: &View, mode: TimeMode, state: &mut ListState) {
+/// One cell, tinted by the colour rule that claimed the row. The fill is
+/// painted before the text so it sits under it, and is expanded by half the
+/// item spacing so neighbouring cells meet without a seam — the same rect
+/// `egui_extras` uses for striping.
+fn cell(row: &mut TableRow<'_, '_>, tint: Option<RowColours>, text: impl Into<egui::WidgetText>) {
+    row.col(|ui| {
+        if let Some(c) = tint {
+            let pad = 0.5 * ui.spacing().item_spacing;
+            ui.painter().rect_filled(
+                ui.max_rect().expand2(pad),
+                egui::Rounding::ZERO,
+                c.background,
+            );
+            ui.style_mut().visuals.override_text_color = Some(c.foreground);
+        }
+        ui.label(text);
+    });
+}
+
+pub fn show(
+    ui: &mut egui::Ui,
+    view: &View,
+    mode: TimeMode,
+    colours: Option<&Rules>,
+    state: &mut ListState,
+) {
     let n = view.len();
     if state.follow && n > 0 {
         state.scroll_to = Some((n - 1, egui::Align::BOTTOM));
@@ -95,33 +121,31 @@ pub fn show(ui: &mut egui::Ui, view: &View, mode: TimeMode, state: &mut ListStat
                 let Some(frame) = view.get(i) else {
                     return;
                 };
-                row.set_selected(state.selected == Some(frame.number));
+                let selected = state.selected == Some(frame.number);
+                row.set_selected(selected);
+                // A selected row keeps the selection highlight; the rule
+                // colour would hide it.
+                let tint = if selected {
+                    None
+                } else {
+                    colours.and_then(|c| c.colours(frame))
+                };
                 let previous = if i > 0 {
                     view.get(i - 1).map(|f| f.ts)
                 } else {
                     None
                 };
-                row.col(|ui| {
-                    ui.label(frame.number.to_string());
-                });
-                row.col(|ui| {
-                    ui.label(timefmt::render(mode, frame.ts, start, previous));
-                });
-                row.col(|ui| {
-                    ui.label(frame.summary.source.to_string());
-                });
-                row.col(|ui| {
-                    ui.label(frame.summary.destination.to_string());
-                });
-                row.col(|ui| {
-                    ui.label(frame.summary.protocol_display());
-                });
-                row.col(|ui| {
-                    ui.label(frame.orig_len.to_string());
-                });
-                row.col(|ui| {
-                    ui.label(&frame.summary.info);
-                });
+                cell(&mut row, tint, frame.number.to_string());
+                cell(
+                    &mut row,
+                    tint,
+                    timefmt::render(mode, frame.ts, start, previous),
+                );
+                cell(&mut row, tint, frame.summary.source.to_string());
+                cell(&mut row, tint, frame.summary.destination.to_string());
+                cell(&mut row, tint, frame.summary.protocol_display());
+                cell(&mut row, tint, frame.orig_len.to_string());
+                cell(&mut row, tint, frame.summary.info.as_str());
                 if row.response().clicked() {
                     state.selected = Some(frame.number);
                     state.follow = false;

@@ -1,6 +1,7 @@
 //! Stage 3: the UI thread. It renders from a store snapshot and issues
 //! start/stop; it never parses and never blocks on the capture pipeline.
 
+pub mod colour_rules;
 mod detail_tree;
 mod device_panel;
 mod filter_bar;
@@ -106,6 +107,8 @@ pub struct NetscopeApp {
     /// filter selects.
     view: View,
     filter: filter_bar::FilterBar,
+    /// Compiled colour rules, applied per displayed row.
+    colours: colour_rules::Rules,
     store_stats: StoreStats,
     list: ListState,
     tree: TreeState,
@@ -114,6 +117,7 @@ pub struct NetscopeApp {
     show_first_run: bool,
     show_devices: bool,
     show_settings: bool,
+    show_colour_rules: bool,
     /// CPU time of the last `update` call.
     ui_frame_time: Duration,
 }
@@ -122,6 +126,7 @@ impl NetscopeApp {
     pub fn new(_cc: &eframe::CreationContext<'_>, opts: Options) -> Self {
         let (config, config_error) = Config::load();
         let preflight = capture::preflight::run();
+        let colours = colour_rules::Rules::new(config.colour_rules.clone());
         let store = Store::new(Limits {
             max_frames: config.ring_max_frames,
             max_bytes: config.ring_max_bytes,
@@ -145,10 +150,12 @@ impl NetscopeApp {
             last_stats: StatsSnapshot::default(),
             view: View::all(store.snapshot()),
             filter: filter_bar::FilterBar::default(),
+            colours,
             store_stats: StoreStats::default(),
             store,
             show_devices: true,
             show_settings: false,
+            show_colour_rules: false,
             tree: TreeState::default(),
             hex: HexState::default(),
             focus: Focus::List,
@@ -394,6 +401,17 @@ impl NetscopeApp {
                 {
                     self.list.follow = self.config.auto_scroll && self.is_capturing();
                     self.persist_config();
+                }
+                ui.separator();
+                if ui
+                    .checkbox(&mut self.config.colouring, "Colourise packet list")
+                    .changed()
+                {
+                    self.persist_config();
+                }
+                if ui.button("Colouring rules…").clicked() {
+                    self.show_colour_rules = true;
+                    ui.close_menu();
                 }
             });
             ui.menu_button("Capture", |ui| {
@@ -682,7 +700,8 @@ impl eframe::App for NetscopeApp {
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.add_enabled_ui(!self.show_first_run, |ui| {
                 let before = self.list.selected;
-                packet_list::show(ui, &self.view, self.config.time_mode, &mut self.list);
+                let colours = self.config.colouring.then_some(&self.colours);
+                packet_list::show(ui, &self.view, self.config.time_mode, colours, &mut self.list);
                 if self.list.selected != before {
                     self.focus = Focus::List;
                 }
@@ -705,6 +724,12 @@ impl eframe::App for NetscopeApp {
                 self.apply_limits();
                 self.persist_config();
             }
+        }
+        if self.show_colour_rules
+            && colour_rules::editor(ctx, &mut self.show_colour_rules, &mut self.colours)
+        {
+            self.config.colour_rules = self.colours.rules().to_vec();
+            self.persist_config();
         }
         self.ui_frame_time = frame_start.elapsed();
     }
