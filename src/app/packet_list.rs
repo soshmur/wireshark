@@ -108,10 +108,10 @@ pub fn show(ui: &mut egui::Ui, snapshot: &Snapshot, mode: TimeMode, state: &mut 
                     ui.label(timefmt::render(mode, frame.ts, start, previous));
                 });
                 row.col(|ui| {
-                    ui.label(&frame.summary.source);
+                    ui.label(frame.summary.source.to_string());
                 });
                 row.col(|ui| {
-                    ui.label(&frame.summary.destination);
+                    ui.label(frame.summary.destination.to_string());
                 });
                 row.col(|ui| {
                     ui.label(frame.summary.protocol_display());

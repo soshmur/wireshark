@@ -1,9 +1,11 @@
 //! Transmission Control Protocol (RFC 9293) with all flags and the common
 //! options: MSS, window scale, SACK-permitted, SACK blocks, timestamps.
 
+use std::fmt::Write as _;
+
 use crate::dissect::ctx::{Ctx, Proto};
 use crate::dissect::cursor::{Cursor, DissectError, Result};
-use crate::dissect::node::{Node, Value};
+use crate::dissect::node::Value;
 
 use super::{transport_checksum, CK_BAD, CK_GOOD, CK_UNVERIFIED};
 
@@ -20,9 +22,8 @@ const FLAG_NAMES: [(u16, &str, &str); 10] = [
     (0x001, "tcp.flags.fin", "FIN"),
 ];
 
-pub fn dissect(data: &[u8], ctx: &mut Ctx) -> Result<Node> {
+pub fn dissect(data: &[u8], ctx: &mut Ctx) -> Result<()> {
     let mut c = Cursor::new(data, ctx.base, ctx.source);
-    let s = c.source();
     let start = c.abs();
     let (sport, sport_r) = c.u16()?;
     let (dport, dport_r) = c.u16()?;
@@ -41,110 +42,94 @@ pub fn dissect(data: &[u8], ctx: &mut Ctx) -> Result<Node> {
         });
     }
     let hdr_r = off_flags_r.start..off_flags_r.start + 1;
-    let flags_r = off_flags_r.start..off_flags_r.end;
+    let flags_r = off_flags_r.clone();
 
     // Wireshark lists set flags lowest bit first: [SYN, ACK], [FIN, ACK].
-    let mut set = String::with_capacity(32);
+    let mut names = super::NameList::new();
     for (bit, _, name) in FLAG_NAMES.iter().rev() {
         if flags & bit != 0 {
-            if !set.is_empty() {
-                set.push_str(", ");
-            }
-            set.push_str(name);
+            names.push(name);
         }
     }
+    let set = names.as_str();
     let payload_len = data.len().saturating_sub(hdr_len);
 
     ctx.set_protocol("tcp");
     ctx.set_info(format!(
         "{sport} → {dport} [{set}] Seq={seq} Ack={ack} Win={window} Len={payload_len}"
     ));
-    let mut node = Node::new("tcp", start..start, Value::None)
-        .with_source(s)
-        .reserve(14);
-    node.push(Node::new("tcp.srcport", sport_r, Value::Unsigned(u64::from(sport))).with_source(s));
-    node.push(Node::new("tcp.dstport", dport_r, Value::Unsigned(u64::from(dport))).with_source(s));
-    node.push(Node::new("tcp.len", 0..0, Value::Unsigned(payload_len as u64)).with_source(s));
-    node.push(Node::new("tcp.seq", seq_r, Value::Unsigned(u64::from(seq))).with_source(s));
-    node.push(Node::new("tcp.ack", ack_r, Value::Unsigned(u64::from(ack))).with_source(s));
-    node.push(Node::new("tcp.hdr_len", hdr_r, Value::Unsigned(hdr_len as u64)).with_source(s));
+    let tcp = ctx.begin("tcp", start..start);
+    ctx.leaf("tcp.srcport", sport_r, Value::Unsigned(u64::from(sport)));
+    ctx.leaf("tcp.dstport", dport_r, Value::Unsigned(u64::from(dport)));
+    ctx.leaf("tcp.len", 0..0, Value::Unsigned(payload_len as u64));
+    ctx.leaf("tcp.seq", seq_r, Value::Unsigned(u64::from(seq)));
+    ctx.leaf("tcp.ack", ack_r, Value::Unsigned(u64::from(ack)));
+    ctx.leaf("tcp.hdr_len", hdr_r, Value::Unsigned(hdr_len as u64));
 
-    let mut fl = Node::new(
+    let flags_text = format!("Flags: 0x{flags:03x} ({set})");
+    ctx.begin_value_text(
         "tcp.flags",
         flags_r.clone(),
         Value::Unsigned(u64::from(flags)),
-    )
-    .with_source(s)
-    .with_text(format!("Flags: 0x{flags:03x} ({set})"));
-    for (bit, abbrev, _) in FLAG_NAMES {
-        fl.push(Node::new(abbrev, flags_r.clone(), Value::Bool(flags & bit != 0)).with_source(s));
-    }
-    node.push(fl);
-    node.push(
-        Node::new(
-            "tcp.window_size_value",
-            window_r,
-            Value::Unsigned(u64::from(window)),
-        )
-        .with_source(s),
+        &flags_text,
     );
-    node.push(
-        Node::new(
-            "tcp.checksum",
-            checksum_r.clone(),
-            Value::Unsigned(u64::from(checksum)),
-        )
-        .with_source(s),
+    for (bit, abbrev, _) in FLAG_NAMES {
+        ctx.leaf(abbrev, flags_r.clone(), Value::Bool(flags & bit != 0));
+    }
+    ctx.end();
+    ctx.leaf(
+        "tcp.window_size_value",
+        window_r,
+        Value::Unsigned(u64::from(window)),
+    );
+    ctx.leaf(
+        "tcp.checksum",
+        checksum_r.clone(),
+        Value::Unsigned(u64::from(checksum)),
     );
     let status = match transport_checksum(ctx, 6, data) {
         Some(0) => CK_GOOD,
         Some(_) => CK_BAD,
         None => CK_UNVERIFIED,
     };
-    node.push(Node::new("tcp.checksum.status", checksum_r, Value::Unsigned(status)).with_source(s));
-    node.push(
-        Node::new("tcp.urgent_pointer", urg_r, Value::Unsigned(u64::from(urg))).with_source(s),
-    );
+    ctx.leaf("tcp.checksum.status", checksum_r, Value::Unsigned(status));
+    ctx.leaf("tcp.urgent_pointer", urg_r, Value::Unsigned(u64::from(urg)));
 
     let opts_len = hdr_len - 20;
     if opts_len > 0 {
         let opts_start = c.abs();
         let mut oc = c.sub(opts_len)?;
-        let mut options = Node::new(
+        ctx.begin_textf(
             "tcp.options",
             opts_start..opts_start + opts_len,
-            Value::None,
-        )
-        .with_source(s)
-        .with_text(format!("Options: ({opts_len} bytes)"));
+            format_args!("Options: ({opts_len} bytes)"),
+        );
         while !oc.is_empty() {
-            match option(&mut oc) {
-                Ok((opt, eol)) => {
-                    options.push(opt);
-                    if eol {
-                        // EOL: the rest of the header is padding.
-                        if !oc.is_empty() {
-                            options.push(
-                                Node::new("tcp.options.data", oc.rest_range(), Value::Bytes)
-                                    .with_source(s),
-                            );
-                        }
-                        break;
+            let depth = ctx.depth();
+            match option(&mut oc, ctx) {
+                Ok(false) => {}
+                Ok(true) => {
+                    // EOL: the rest of the header is padding.
+                    if !oc.is_empty() {
+                        ctx.leaf("tcp.options.data", oc.rest_range(), Value::Bytes);
                     }
+                    break;
                 }
                 Err(e) => {
-                    options.push(
-                        Node::new("_ws.malformed", oc.rest_range(), Value::None)
-                            .with_source(s)
-                            .with_text(format!("[Malformed option: {e}]")),
+                    ctx.restore_depth(depth);
+                    ctx.leaf_textf(
+                        "_ws.malformed",
+                        oc.rest_range(),
+                        Value::None,
+                        format_args!("[Malformed option: {e}]"),
                     );
                     break;
                 }
             }
         }
-        node.push(options);
+        ctx.end();
     }
-    node.range = start..c.abs();
+    ctx.end_at(tcp, c.abs());
 
     if payload_len > 0 {
         // The payload is the next layer, not a child of the TCP header.
@@ -162,26 +147,25 @@ pub fn dissect(data: &[u8], ctx: &mut Ctx) -> Result<Node> {
         };
         ctx.call_next(next, c.pos());
     }
-    Ok(node)
+    Ok(())
 }
 
 /// One TCP option; the flag is `true` for End-of-Options.
-fn option(c: &mut Cursor) -> Result<(Node, bool)> {
-    let s = c.source();
+fn option(c: &mut Cursor, ctx: &mut Ctx) -> Result<bool> {
     let start = c.abs();
     let (kind, kind_r) = c.u8()?;
-    let kind_node =
-        |r| Node::new("tcp.option_kind", r, Value::Unsigned(u64::from(kind))).with_source(s);
     match kind {
         0 => {
-            let mut n = Node::new("tcp.options.eol", start..c.abs(), Value::None).with_source(s);
-            n.push(kind_node(kind_r));
-            return Ok((n, true));
+            let n = ctx.begin("tcp.options.eol", start..c.abs());
+            ctx.leaf("tcp.option_kind", kind_r, Value::Unsigned(u64::from(kind)));
+            ctx.end_at(n, c.abs());
+            return Ok(true);
         }
         1 => {
-            let mut n = Node::new("tcp.options.nop", start..c.abs(), Value::None).with_source(s);
-            n.push(kind_node(kind_r));
-            return Ok((n, false));
+            let n = ctx.begin("tcp.options.nop", start..c.abs());
+            ctx.leaf("tcp.option_kind", kind_r, Value::Unsigned(u64::from(kind)));
+            ctx.end_at(n, c.abs());
+            return Ok(false);
         }
         _ => {}
     }
@@ -193,105 +177,79 @@ fn option(c: &mut Cursor) -> Result<(Node, bool)> {
         });
     }
     let body_len = usize::from(len) - 2;
-    let len_node = || {
-        Node::new(
-            "tcp.option_len",
-            len_r.clone(),
-            Value::Unsigned(u64::from(len)),
-        )
-        .with_source(s)
+    // The option kind and length determine the node name; a truncated body
+    // returns early and the caller restores the builder depth.
+    let abbrev = match (kind, body_len) {
+        (2, 2) => "tcp.options.mss",
+        (3, 1) => "tcp.options.wscale",
+        (4, 0) => "tcp.options.sack_perm",
+        (5, n) if n % 8 == 0 => "tcp.options.sack",
+        (8, 8) => "tcp.options.timestamp",
+        _ => "tcp.options.unknown",
     };
-    let (abbrev, body_nodes, text): (&'static str, Vec<Node>, String) = match kind {
-        2 if body_len == 2 => {
+    let node = ctx.begin(abbrev, start..start);
+    ctx.leaf("tcp.option_kind", kind_r, Value::Unsigned(u64::from(kind)));
+    ctx.leaf("tcp.option_len", len_r, Value::Unsigned(u64::from(len)));
+    match abbrev {
+        "tcp.options.mss" => {
             let (mss, r) = c.u16()?;
-            (
-                "tcp.options.mss",
-                vec![
-                    Node::new("tcp.options.mss_val", r, Value::Unsigned(u64::from(mss)))
-                        .with_source(s),
-                ],
-                format!("Maximum segment size: {mss} bytes"),
-            )
+            ctx.leaf("tcp.options.mss_val", r, Value::Unsigned(u64::from(mss)));
+            ctx.set_textf(node, format_args!("Maximum segment size: {mss} bytes"));
         }
-        3 if body_len == 1 => {
+        "tcp.options.wscale" => {
             let (shift, r) = c.u8()?;
             let mult = 1u64 << shift.min(14);
-            (
-                "tcp.options.wscale",
-                vec![
-                    Node::new(
-                        "tcp.options.wscale.shift",
-                        r.clone(),
-                        Value::Unsigned(u64::from(shift)),
-                    )
-                    .with_source(s),
-                    Node::new("tcp.options.wscale.multiplier", r, Value::Unsigned(mult))
-                        .with_source(s),
-                ],
-                format!("Window scale: {shift} (multiply by {mult})"),
-            )
+            ctx.leaf(
+                "tcp.options.wscale.shift",
+                r.clone(),
+                Value::Unsigned(u64::from(shift)),
+            );
+            ctx.leaf("tcp.options.wscale.multiplier", r, Value::Unsigned(mult));
+            ctx.set_textf(
+                node,
+                format_args!("Window scale: {shift} (multiply by {mult})"),
+            );
         }
-        4 if body_len == 0 => ("tcp.options.sack_perm", vec![], "SACK permitted".into()),
-        5 if body_len % 8 == 0 => {
-            let mut blocks = Vec::new();
-            let mut texts = Vec::new();
+        "tcp.options.sack_perm" => ctx.set_text(node, "SACK permitted"),
+        "tcp.options.sack" => {
+            let mut blocks = Vec::with_capacity(body_len / 8);
             for _ in 0..body_len / 8 {
                 let (le, le_r) = c.u32()?;
                 let (re, re_r) = c.u32()?;
-                blocks.push(
-                    Node::new("tcp.options.sack_le", le_r, Value::Unsigned(u64::from(le)))
-                        .with_source(s),
-                );
-                blocks.push(
-                    Node::new("tcp.options.sack_re", re_r, Value::Unsigned(u64::from(re)))
-                        .with_source(s),
-                );
-                texts.push(format!("{le}-{re}"));
+                ctx.leaf("tcp.options.sack_le", le_r, Value::Unsigned(u64::from(le)));
+                ctx.leaf("tcp.options.sack_re", re_r, Value::Unsigned(u64::from(re)));
+                blocks.push((le, re));
             }
-            (
-                "tcp.options.sack",
-                blocks,
-                format!("SACK: {}", texts.join(" ")),
-            )
+            let mut text = String::from("SACK:");
+            for (le, re) in blocks {
+                let _ = write!(text, " {le}-{re}");
+            }
+            ctx.set_text(node, &text);
         }
-        8 if body_len == 8 => {
+        "tcp.options.timestamp" => {
             let (tsval, v_r) = c.u32()?;
             let (tsecr, e_r) = c.u32()?;
-            (
-                "tcp.options.timestamp",
-                vec![
-                    Node::new(
-                        "tcp.options.timestamp.tsval",
-                        v_r,
-                        Value::Unsigned(u64::from(tsval)),
-                    )
-                    .with_source(s),
-                    Node::new(
-                        "tcp.options.timestamp.tsecr",
-                        e_r,
-                        Value::Unsigned(u64::from(tsecr)),
-                    )
-                    .with_source(s),
-                ],
-                format!("Timestamps: TSval {tsval}, TSecr {tsecr}"),
-            )
+            ctx.leaf(
+                "tcp.options.timestamp.tsval",
+                v_r,
+                Value::Unsigned(u64::from(tsval)),
+            );
+            ctx.leaf(
+                "tcp.options.timestamp.tsecr",
+                e_r,
+                Value::Unsigned(u64::from(tsecr)),
+            );
+            ctx.set_textf(
+                node,
+                format_args!("Timestamps: TSval {tsval}, TSecr {tsecr}"),
+            );
         }
         _ => {
             let (_, r) = c.take(body_len)?;
-            (
-                "tcp.options.unknown",
-                vec![Node::new("tcp.options.data", r, Value::Bytes).with_source(s)],
-                format!("Option kind {kind} ({len} bytes)"),
-            )
+            ctx.leaf("tcp.options.data", r, Value::Bytes);
+            ctx.set_textf(node, format_args!("Option kind {kind} ({len} bytes)"));
         }
-    };
-    let mut n = Node::new(abbrev, start..c.abs(), Value::None)
-        .with_source(s)
-        .with_text(text);
-    n.push(kind_node(kind_r));
-    n.push(len_node());
-    for b in body_nodes {
-        n.push(b);
     }
-    Ok((n, false))
+    ctx.end_at(node, c.abs());
+    Ok(false)
 }

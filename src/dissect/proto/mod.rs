@@ -20,20 +20,18 @@ pub mod vlan;
 
 use super::ctx::{Ctx, NetAddrs, Proto};
 use super::cursor::Result;
-use super::node::{Node, Value};
+use super::node::Value;
 
 /// The `data` pseudo-protocol: whatever no dissector claimed.
-pub fn data(data: &[u8], ctx: &mut Ctx) -> Result<Node> {
+pub fn data(data: &[u8], ctx: &mut Ctx) -> Result<()> {
     let range = ctx.base..ctx.base + data.len();
-    ctx.protocols.push("data");
-    let mut node = Node::new("data", range.clone(), Value::None)
-        .with_source(ctx.source)
-        .reserve(2);
-    node.push(Node::new("data.data", range.clone(), Value::Bytes).with_source(ctx.source));
-    node.push(
-        Node::new("data.len", range, Value::Unsigned(data.len() as u64)).with_source(ctx.source),
-    );
-    Ok(node)
+    ctx.push_protocol("data");
+    let node = ctx.begin("data", range.clone());
+    ctx.leaf("data.data", range.clone(), Value::Bytes);
+    ctx.leaf("data.len", range, Value::Unsigned(data.len() as u64));
+    ctx.end();
+    let _ = node;
+    Ok(())
 }
 
 /// Dispatch on an EtherType, shared by Ethernet, 802.1Q and SNAP.
@@ -126,5 +124,71 @@ mod tests {
         assert_eq!(inet_checksum(&[&zeroed]), 0xb861);
         // Splitting across parts at an odd boundary gives the same result.
         assert_eq!(inet_checksum(&[&zeroed[..3], &zeroed[3..]]), 0xb861);
+    }
+}
+
+/// Joins short names ("SYN, ACK") into a fixed stack buffer. Flag summaries
+/// are built once per frame, so avoiding a `Vec` and a `join` here is worth
+/// the small ceiling; anything longer is truncated rather than allocating.
+pub struct NameList {
+    buf: [u8; 96],
+    len: usize,
+}
+
+impl Default for NameList {
+    fn default() -> Self {
+        NameList::new()
+    }
+}
+
+impl NameList {
+    pub fn new() -> NameList {
+        NameList {
+            buf: [0; 96],
+            len: 0,
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    pub fn push(&mut self, name: &str) {
+        if !self.is_empty() {
+            self.extend(b", ");
+        }
+        self.extend(name.as_bytes());
+    }
+
+    fn extend(&mut self, bytes: &[u8]) {
+        let room = self.buf.len() - self.len;
+        let n = bytes.len().min(room);
+        self.buf[self.len..self.len + n].copy_from_slice(&bytes[..n]);
+        self.len += n;
+    }
+
+    pub fn as_str(&self) -> &str {
+        // Only ASCII names are ever pushed, so this cannot fail; the fallback
+        // keeps the function total rather than panicking on a future misuse.
+        std::str::from_utf8(&self.buf[..self.len]).unwrap_or("")
+    }
+}
+
+#[cfg(test)]
+mod name_list_tests {
+    use super::NameList;
+
+    #[test]
+    fn joins_and_truncates() {
+        let mut n = NameList::new();
+        assert!(n.is_empty());
+        n.push("SYN");
+        n.push("ACK");
+        assert_eq!(n.as_str(), "SYN, ACK");
+        let mut n = NameList::new();
+        for _ in 0..40 {
+            n.push("LONGNAME");
+        }
+        assert_eq!(n.as_str().len(), 96);
     }
 }

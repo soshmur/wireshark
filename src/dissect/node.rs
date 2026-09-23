@@ -1,17 +1,17 @@
 //! The dissection tree.
 //!
-//! Dissectors build `Node`s: an ordinary pointer tree, convenient to
-//! construct. The store keeps a `Tree`: the same nodes flattened depth-first
-//! into one contiguous array of 28-byte records plus a byte arena for strings.
-//! Every node in both forms carries the byte range it was decoded from; the
-//! hex pane highlights from it and the filter engine reads from it.
+//! Dissectors write nodes straight into a `TreeBuilder`: a flat, depth-first
+//! array of 28-byte records plus a byte arena for strings. There is no
+//! intermediate pointer tree, so a frame costs two allocations rather than one
+//! per protocol subtree. Every node carries the byte range it was decoded
+//! from; the hex pane highlights from it and the filter engine reads from it.
 //!
 //! Labels are not stored: a node holds its field id and typed value, and the
 //! display label is formatted on demand from the field registry
 //! (`registry::label`). Nodes that need free text (malformed reasons, option
 //! summaries) carry it in `text`, which overrides the formatted label.
 
-use std::fmt;
+use std::fmt::{self, Write as _};
 use std::ops::Range;
 
 use super::registry;
@@ -89,64 +89,7 @@ pub fn fmt_ipv6(a: [u8; 16]) -> String {
     std::net::Ipv6Addr::from(a).to_string()
 }
 
-/// The builder form of a node, as returned by dissectors.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Node {
-    /// Filter field name (`tcp.srcport`); protocols use their bare name (`tcp`).
-    pub abbrev: &'static str,
-    /// Byte range within data source `source` this node was decoded from.
-    pub range: Range<usize>,
-    pub source: SourceId,
-    pub value: Value,
-    /// Free-text label override. `None` means "format from the registry".
-    pub text: Option<Box<str>>,
-    pub children: Vec<Node>,
-}
-
-impl Node {
-    pub fn new(abbrev: &'static str, range: Range<usize>, value: Value) -> Node {
-        Node {
-            abbrev,
-            range,
-            source: 0,
-            value,
-            text: None,
-            children: Vec::new(),
-        }
-    }
-
-    pub fn with_text(mut self, text: impl Into<Box<str>>) -> Node {
-        self.text = Some(text.into());
-        self
-    }
-
-    pub fn with_children(mut self, children: Vec<Node>) -> Node {
-        self.children = children;
-        self
-    }
-
-    pub fn with_source(mut self, source: SourceId) -> Node {
-        self.source = source;
-        self
-    }
-
-    /// Reserve room for `n` children (avoids regrowth while building).
-    pub fn reserve(mut self, n: usize) -> Node {
-        self.children.reserve_exact(n);
-        self
-    }
-
-    pub fn push(&mut self, child: Node) {
-        self.children.push(child);
-    }
-
-    /// Number of nodes in this subtree including itself.
-    pub fn count(&self) -> usize {
-        1 + self.children.iter().map(Node::count).sum::<usize>()
-    }
-}
-
-// ---- compact form ---------------------------------------------------------
+// ---- storage --------------------------------------------------------------
 
 const TAG_NONE: u8 = 0;
 const TAG_BOOL: u8 = 1;
@@ -175,6 +118,11 @@ pub struct TreeNode {
     payload: [u8; 8],
 }
 
+/// Handle to a node already written, so its range, text or value can be
+/// corrected once the dissector knows them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NodeId(u32);
+
 /// A frame's dissection tree in flattened, depth-first form.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Tree {
@@ -189,19 +137,269 @@ pub struct NodeRef<'a> {
     index: usize,
 }
 
-impl Tree {
-    /// Flatten `layers` (each a top-level node) into a tree.
-    pub fn from_layers(layers: &[Node]) -> Tree {
-        let total: usize = layers.iter().map(Node::count).sum();
-        let mut nodes = Vec::with_capacity(total);
-        let mut arena = Vec::with_capacity(64);
-        for layer in layers {
-            flatten(layer, 0, &mut nodes, &mut arena);
+// ---- building -------------------------------------------------------------
+
+/// Lets `write!` append UTF-8 straight into the arena.
+struct ArenaWriter<'a>(&'a mut Vec<u8>);
+
+impl fmt::Write for ArenaWriter<'_> {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        self.0.extend_from_slice(s.as_bytes());
+        Ok(())
+    }
+}
+
+/// Writes nodes in depth-first order. `begin`/`end` bracket a container;
+/// `leaf` adds a field at the current depth.
+#[derive(Debug, Default)]
+pub struct TreeBuilder {
+    nodes: Vec<TreeNode>,
+    arena: Vec<u8>,
+    depth: u8,
+    /// Largest `range.end` written for data source 0, so the driver can tell
+    /// which trailing bytes no layer claimed.
+    max_end_source0: usize,
+}
+
+impl TreeBuilder {
+    pub fn new() -> TreeBuilder {
+        TreeBuilder {
+            // A typical Ethernet/IPv4/TCP frame is ~66 nodes.
+            nodes: Vec::with_capacity(80),
+            arena: Vec::with_capacity(128),
+            depth: 0,
+            max_end_source0: 0,
         }
+    }
+
+    pub fn len(&self) -> usize {
+        self.nodes.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.nodes.is_empty()
+    }
+
+    pub fn depth(&self) -> u8 {
+        self.depth
+    }
+
+    /// Handle of the node that will be written next.
+    pub fn next_id(&self) -> NodeId {
+        NodeId(self.nodes.len() as u32)
+    }
+
+    /// The furthest byte of data source 0 any node covers.
+    pub fn max_end(&self) -> usize {
+        self.max_end_source0
+    }
+
+    /// Set a node's range to span every node written at or after it, in the
+    /// same data source. The driver uses this on a layer whose dissector
+    /// returned early, so the layer still covers the fields it did parse.
+    pub fn fit_range(&mut self, id: NodeId) {
+        let i = id.0 as usize;
+        let Some(node) = self.nodes.get(i) else {
+            return;
+        };
+        let source = node.source;
+        let end = self.nodes[i..]
+            .iter()
+            .filter(|n| n.source == source)
+            .map(|n| n.start as usize + n.len as usize)
+            .max()
+            .unwrap_or(0);
+        self.set_end(id, end);
+    }
+
+    /// Forget the watermark. The driver calls this after writing the `frame`
+    /// pseudo-layer, whose range spans the whole frame by definition and
+    /// would otherwise hide unclaimed trailing bytes.
+    pub fn reset_max_end(&mut self) {
+        self.max_end_source0 = 0;
+    }
+
+    fn push(
+        &mut self,
+        abbrev: &'static str,
+        source: SourceId,
+        range: Range<usize>,
+        value: &Value,
+    ) -> NodeId {
+        let mut payload = [0u8; 8];
+        let tag = match value {
+            Value::None => TAG_NONE,
+            Value::Bool(b) => {
+                payload[0] = u8::from(*b);
+                TAG_BOOL
+            }
+            Value::Unsigned(u) => {
+                payload = u.to_le_bytes();
+                TAG_UNSIGNED
+            }
+            Value::Signed(i) => {
+                payload = i.to_le_bytes();
+                TAG_SIGNED
+            }
+            Value::Str(s) => {
+                payload = self.intern(s.as_bytes());
+                TAG_STR
+            }
+            Value::Bytes => TAG_BYTES,
+            Value::Ipv4(a) => {
+                payload[..4].copy_from_slice(a);
+                TAG_IPV4
+            }
+            Value::Ipv6(a) => {
+                payload = self.intern(a);
+                TAG_IPV6
+            }
+            Value::Mac(m) => {
+                payload[..6].copy_from_slice(m);
+                TAG_MAC
+            }
+        };
+        if source == 0 {
+            self.max_end_source0 = self.max_end_source0.max(range.end);
+        }
+        let id = NodeId(self.nodes.len() as u32);
+        self.nodes.push(TreeNode {
+            field: registry::field_id(abbrev),
+            depth: self.depth,
+            source,
+            tag,
+            _pad: 0,
+            text_len: 0,
+            start: range.start.min(u32::MAX as usize) as u32,
+            len: range.len().min(u32::MAX as usize) as u32,
+            text_off: 0,
+            payload,
+        });
+        id
+    }
+
+    fn intern(&mut self, bytes: &[u8]) -> [u8; 8] {
+        let off = self.arena.len() as u32;
+        self.arena.extend_from_slice(bytes);
+        let mut p = [0u8; 8];
+        p[..4].copy_from_slice(&off.to_le_bytes());
+        p[4..].copy_from_slice(&(bytes.len() as u32).to_le_bytes());
+        p
+    }
+
+    /// Add a field at the current depth.
+    pub fn leaf(
+        &mut self,
+        abbrev: &'static str,
+        source: SourceId,
+        range: Range<usize>,
+        value: Value,
+    ) -> NodeId {
+        self.push(abbrev, source, range, &value)
+    }
+
+    /// Open a container; nodes added until `end` are its children.
+    pub fn begin(&mut self, abbrev: &'static str, source: SourceId, range: Range<usize>) -> NodeId {
+        self.begin_value(abbrev, source, range, Value::None)
+    }
+
+    /// Open a container that also carries a value of its own, such as a flags
+    /// byte whose bits are its children.
+    pub fn begin_value(
+        &mut self,
+        abbrev: &'static str,
+        source: SourceId,
+        range: Range<usize>,
+        value: Value,
+    ) -> NodeId {
+        let id = self.push(abbrev, source, range, &value);
+        self.depth = self.depth.saturating_add(1);
+        id
+    }
+
+    /// Close the most recently opened container.
+    pub fn end(&mut self) {
+        self.depth = self.depth.saturating_sub(1);
+    }
+
+    /// Restore the nesting depth, after a dissector returned early from
+    /// inside one or more open containers.
+    pub fn set_depth(&mut self, depth: u8) {
+        self.depth = depth;
+    }
+
+    /// Close a container and correct its range to what it actually covered.
+    pub fn end_at(&mut self, id: NodeId, end: usize) {
+        self.end();
+        self.set_end(id, end);
+    }
+
+    /// Correct a node's range end (its start is unchanged).
+    pub fn set_end(&mut self, id: NodeId, end: usize) {
+        if let Some(n) = self.nodes.get_mut(id.0 as usize) {
+            let start = n.start as usize;
+            n.len = end.saturating_sub(start).min(u32::MAX as usize) as u32;
+            if n.source == 0 {
+                self.max_end_source0 = self.max_end_source0.max(end);
+            }
+        }
+    }
+
+    /// Give a node a free-text label, overriding the registry's format.
+    pub fn set_text(&mut self, id: NodeId, text: &str) {
+        let p = self.intern(text.as_bytes());
+        if let Some(n) = self.nodes.get_mut(id.0 as usize) {
+            n.text_off = u32::from_le_bytes([p[0], p[1], p[2], p[3]]);
+            n.text_len = text.len().min(u16::MAX as usize) as u16;
+        }
+    }
+
+    /// Format a label directly into the arena, with no intermediate `String`.
+    pub fn set_text_args(&mut self, id: NodeId, args: fmt::Arguments<'_>) {
+        let off = self.arena.len();
+        let _ = ArenaWriter(&mut self.arena).write_fmt(args);
+        let len = self.arena.len() - off;
+        if let Some(n) = self.nodes.get_mut(id.0 as usize) {
+            n.text_off = off.min(u32::MAX as usize) as u32;
+            n.text_len = len.min(u16::MAX as usize) as u16;
+        }
+    }
+
+    /// Replace a node's string value with `parts` joined by `sep`, written
+    /// straight into the arena. Used to patch `frame.protocols`, which is
+    /// known only once every layer has run.
+    pub fn set_str_joined(&mut self, id: NodeId, parts: &[&str], sep: u8) {
+        let off = self.arena.len() as u32;
+        for (i, part) in parts.iter().enumerate() {
+            if i > 0 {
+                self.arena.push(sep);
+            }
+            self.arena.extend_from_slice(part.as_bytes());
+        }
+        let len = self.arena.len() as u32 - off;
+        let mut p = [0u8; 8];
+        p[..4].copy_from_slice(&off.to_le_bytes());
+        p[4..].copy_from_slice(&len.to_le_bytes());
+        if let Some(n) = self.nodes.get_mut(id.0 as usize) {
+            n.tag = TAG_STR;
+            n.payload = p;
+        }
+    }
+
+    pub fn finish(self) -> Tree {
         Tree {
-            nodes: nodes.into_boxed_slice(),
-            arena: arena.into_boxed_slice(),
+            nodes: self.nodes.into_boxed_slice(),
+            arena: self.arena.into_boxed_slice(),
         }
+    }
+}
+
+impl Tree {
+    /// Build a tree with a closure, for tests and small fixtures.
+    pub fn build(f: impl FnOnce(&mut TreeBuilder)) -> Tree {
+        let mut b = TreeBuilder::new();
+        f(&mut b);
+        b.finish()
     }
 
     pub fn len(&self) -> usize {
@@ -258,74 +456,6 @@ impl Tree {
         let id = registry::field_id_if_known(abbrev);
         self.iter().filter(move |n| Some(n.node().field) == id)
     }
-}
-
-fn flatten(n: &Node, depth: u8, out: &mut Vec<TreeNode>, arena: &mut Vec<u8>) {
-    let mut payload = [0u8; 8];
-    let tag = match &n.value {
-        Value::None => TAG_NONE,
-        Value::Bool(b) => {
-            payload[0] = u8::from(*b);
-            TAG_BOOL
-        }
-        Value::Unsigned(u) => {
-            payload = u.to_le_bytes();
-            TAG_UNSIGNED
-        }
-        Value::Signed(i) => {
-            payload = i.to_le_bytes();
-            TAG_SIGNED
-        }
-        Value::Str(s) => {
-            payload = arena_ref(arena, s.as_bytes());
-            TAG_STR
-        }
-        Value::Bytes => TAG_BYTES,
-        Value::Ipv4(a) => {
-            payload[..4].copy_from_slice(a);
-            TAG_IPV4
-        }
-        Value::Ipv6(a) => {
-            payload = arena_ref(arena, a);
-            TAG_IPV6
-        }
-        Value::Mac(m) => {
-            payload[..6].copy_from_slice(m);
-            TAG_MAC
-        }
-    };
-    let (text_off, text_len) = match &n.text {
-        Some(t) => {
-            let off = arena.len() as u32;
-            arena.extend_from_slice(t.as_bytes());
-            (off, t.len().min(u16::MAX as usize) as u16)
-        }
-        None => (0, 0),
-    };
-    out.push(TreeNode {
-        field: registry::field_id(n.abbrev),
-        depth,
-        source: n.source,
-        tag,
-        _pad: 0,
-        text_len,
-        start: n.range.start.min(u32::MAX as usize) as u32,
-        len: n.range.len().min(u32::MAX as usize) as u32,
-        text_off,
-        payload,
-    });
-    for c in &n.children {
-        flatten(c, depth.saturating_add(1), out, arena);
-    }
-}
-
-fn arena_ref(arena: &mut Vec<u8>, bytes: &[u8]) -> [u8; 8] {
-    let off = arena.len() as u32;
-    arena.extend_from_slice(bytes);
-    let mut p = [0u8; 8];
-    p[..4].copy_from_slice(&off.to_le_bytes());
-    p[4..].copy_from_slice(&(bytes.len() as u32).to_le_bytes());
-    p
 }
 
 impl<'a> NodeRef<'a> {
@@ -463,20 +593,22 @@ mod tests {
     use super::*;
 
     fn sample() -> Tree {
-        let leaf = Node::new("tcp.srcport", 4..6, Value::Unsigned(443));
-        let flag = Node::new("tcp.flags.syn", 2..4, Value::Bool(true));
-        let flags = Node::new("tcp.flags", 2..4, Value::Unsigned(2)).with_children(vec![flag]);
-        let tcp = Node::new("tcp", 0..10, Value::None).with_children(vec![leaf, flags]);
-        let eth = Node::new("eth", 0..14, Value::None).with_children(vec![Node::new(
-            "eth.src",
-            6..12,
-            Value::Mac([1, 2, 3, 4, 5, 6]),
-        )]);
-        Tree::from_layers(&[eth, tcp])
+        Tree::build(|b| {
+            let eth = b.begin("eth", 0, 0..14);
+            b.leaf("eth.src", 0, 6..12, Value::Mac([1, 2, 3, 4, 5, 6]));
+            b.end_at(eth, 14);
+            let tcp = b.begin("tcp", 0, 0..10);
+            b.leaf("tcp.srcport", 0, 4..6, Value::Unsigned(443));
+            let flags = b.begin("tcp.flags", 0, 2..4);
+            b.leaf("tcp.flags.syn", 0, 2..4, Value::Bool(true));
+            b.end();
+            let _ = flags;
+            b.end_at(tcp, 10);
+        })
     }
 
     #[test]
-    fn flattens_depth_first_with_structure() {
+    fn builds_depth_first_with_structure() {
         let t = sample();
         let order: Vec<(&str, u8)> = t.iter().map(|n| (n.abbrev(), n.depth())).collect();
         assert_eq!(
@@ -500,17 +632,18 @@ mod tests {
             tcp.child("tcp.srcport").and_then(|n| n.unsigned()),
             Some(443)
         );
+        assert_eq!(tcp.range(), 0..10);
     }
 
     #[test]
     fn values_round_trip() {
-        let nodes = vec![
-            Node::new("dns.qry.name", 0..3, Value::Str("example.com".into())).with_text("hello"),
-            Node::new("ipv6.src", 0..16, Value::Ipv6([1; 16])),
-            Node::new("ip.ttl", 0..1, Value::Signed(-5)),
-            Node::new("data.data", 0..4, Value::Bytes),
-        ];
-        let t = Tree::from_layers(&nodes);
+        let t = Tree::build(|b| {
+            let id = b.leaf("dns.qry.name", 0, 0..3, Value::Str("example.com".into()));
+            b.set_text(id, "hello");
+            b.leaf("ipv6.src", 0, 0..16, Value::Ipv6([1; 16]));
+            b.leaf("ip.ttl", 0, 0..1, Value::Signed(-5));
+            b.leaf("data.data", 0, 0..4, Value::Bytes);
+        });
         assert_eq!(t.get(0).unwrap().value(), Value::Str("example.com".into()));
         assert_eq!(t.get(0).unwrap().str_value(), Some("example.com"));
         assert_eq!(t.get(0).unwrap().text(), Some("hello"));
@@ -519,6 +652,18 @@ mod tests {
         assert_eq!(t.get(3).unwrap().value(), Value::Bytes);
         assert_eq!(t.get(3).unwrap().range(), 0..4);
         assert_eq!(std::mem::size_of::<TreeNode>(), 28);
+    }
+
+    #[test]
+    fn end_at_and_set_end_correct_ranges() {
+        let t = Tree::build(|b| {
+            let id = b.begin("tcp", 0, 5..5);
+            b.leaf("tcp.srcport", 0, 5..7, Value::Unsigned(1));
+            b.end_at(id, 25);
+            assert_eq!(b.depth(), 0);
+            assert_eq!(b.max_end(), 25);
+        });
+        assert_eq!(t.get(0).unwrap().range(), 5..25);
     }
 
     #[test]

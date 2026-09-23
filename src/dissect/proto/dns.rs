@@ -3,7 +3,7 @@
 
 use crate::dissect::ctx::Ctx;
 use crate::dissect::cursor::{Cursor, DissectError, Result};
-use crate::dissect::node::{Node, Value};
+use crate::dissect::node::Value;
 use crate::dissect::registry::{enum_name, DNS_RCODES, DNS_TYPES};
 
 use super::{ipv4_str, ipv6_str};
@@ -92,9 +92,8 @@ impl Msg<'_> {
     }
 }
 
-pub fn dissect(data: &[u8], ctx: &mut Ctx) -> Result<Node> {
+pub fn dissect(data: &[u8], ctx: &mut Ctx) -> Result<()> {
     let mut c = Cursor::new(data, ctx.base, ctx.source);
-    let s = c.source();
     let start = c.abs();
     let msg = Msg {
         bytes: data,
@@ -112,107 +111,83 @@ pub fn dissect(data: &[u8], ctx: &mut Ctx) -> Result<Node> {
     let rcode = flags & 0xf;
 
     ctx.set_protocol("dns");
-    let mut node = Node::new("dns", start..start + data.len(), Value::None)
-        .with_source(s)
-        .with_text(format!(
-            "Domain Name System ({})",
-            if response { "response" } else { "query" }
-        ));
-    node.push(Node::new("dns.id", id_r, Value::Unsigned(u64::from(id))).with_source(s));
-    let mut fl = Node::new(
-        "dns.flags",
-        flags_r.clone(),
-        Value::Unsigned(u64::from(flags)),
-    )
-    .with_source(s)
-    .with_text(format!(
+    let text = format!(
+        "Domain Name System ({})",
+        if response { "response" } else { "query" }
+    );
+    let dns = ctx.begin_text("dns", start..start + data.len(), &text);
+    ctx.leaf("dns.id", id_r, Value::Unsigned(u64::from(id)));
+
+    let flags_text = format!(
         "Flags: 0x{flags:04x} {}",
         if response {
             "Standard query response"
         } else {
             "Standard query"
         }
-    ));
+    );
+    ctx.begin_value_text(
+        "dns.flags",
+        flags_r.clone(),
+        Value::Unsigned(u64::from(flags)),
+        &flags_text,
+    );
     let bit = |mask: u16| flags & mask != 0;
-    fl.push(Node::new("dns.flags.response", flags_r.clone(), Value::Bool(response)).with_source(s));
-    fl.push(
-        Node::new(
-            "dns.flags.opcode",
-            flags_r.clone(),
-            Value::Unsigned(u64::from(opcode)),
-        )
-        .with_source(s),
+    ctx.leaf("dns.flags.response", flags_r.clone(), Value::Bool(response));
+    ctx.leaf(
+        "dns.flags.opcode",
+        flags_r.clone(),
+        Value::Unsigned(u64::from(opcode)),
     );
     if response {
-        fl.push(
-            Node::new(
-                "dns.flags.authoritative",
-                flags_r.clone(),
-                Value::Bool(bit(0x0400)),
-            )
-            .with_source(s),
+        ctx.leaf(
+            "dns.flags.authoritative",
+            flags_r.clone(),
+            Value::Bool(bit(0x0400)),
         );
     }
-    fl.push(
-        Node::new(
-            "dns.flags.truncated",
-            flags_r.clone(),
-            Value::Bool(bit(0x0200)),
-        )
-        .with_source(s),
+    ctx.leaf(
+        "dns.flags.truncated",
+        flags_r.clone(),
+        Value::Bool(bit(0x0200)),
     );
-    fl.push(
-        Node::new(
-            "dns.flags.recdesired",
-            flags_r.clone(),
-            Value::Bool(bit(0x0100)),
-        )
-        .with_source(s),
+    ctx.leaf(
+        "dns.flags.recdesired",
+        flags_r.clone(),
+        Value::Bool(bit(0x0100)),
     );
     if response {
-        fl.push(
-            Node::new(
-                "dns.flags.recavail",
-                flags_r.clone(),
-                Value::Bool(bit(0x0080)),
-            )
-            .with_source(s),
-        );
-    }
-    fl.push(Node::new("dns.flags.z", flags_r.clone(), Value::Bool(bit(0x0040))).with_source(s));
-    if response {
-        fl.push(
-            Node::new(
-                "dns.flags.authenticated",
-                flags_r.clone(),
-                Value::Bool(bit(0x0020)),
-            )
-            .with_source(s),
-        );
-    }
-    fl.push(
-        Node::new(
-            "dns.flags.checkdisable",
+        ctx.leaf(
+            "dns.flags.recavail",
             flags_r.clone(),
-            Value::Bool(bit(0x0010)),
-        )
-        .with_source(s),
+            Value::Bool(bit(0x0080)),
+        );
+    }
+    ctx.leaf("dns.flags.z", flags_r.clone(), Value::Bool(bit(0x0040)));
+    if response {
+        ctx.leaf(
+            "dns.flags.authenticated",
+            flags_r.clone(),
+            Value::Bool(bit(0x0020)),
+        );
+    }
+    ctx.leaf(
+        "dns.flags.checkdisable",
+        flags_r.clone(),
+        Value::Bool(bit(0x0010)),
     );
     if response {
-        fl.push(
-            Node::new(
-                "dns.flags.rcode",
-                flags_r,
-                Value::Unsigned(u64::from(rcode)),
-            )
-            .with_source(s),
+        ctx.leaf(
+            "dns.flags.rcode",
+            flags_r,
+            Value::Unsigned(u64::from(rcode)),
         );
     }
-    node.push(fl);
-    node.push(Node::new("dns.count.queries", qd_r, Value::Unsigned(u64::from(qd))).with_source(s));
-    node.push(Node::new("dns.count.answers", an_r, Value::Unsigned(u64::from(an))).with_source(s));
-    node.push(Node::new("dns.count.auth_rr", ns_r, Value::Unsigned(u64::from(ns))).with_source(s));
-    node.push(Node::new("dns.count.add_rr", ar_r, Value::Unsigned(u64::from(ar))).with_source(s));
+    ctx.end();
+    ctx.leaf("dns.count.queries", qd_r, Value::Unsigned(u64::from(qd)));
+    ctx.leaf("dns.count.answers", an_r, Value::Unsigned(u64::from(an)));
+    ctx.leaf("dns.count.auth_rr", ns_r, Value::Unsigned(u64::from(ns)));
+    ctx.leaf("dns.count.add_rr", ar_r, Value::Unsigned(u64::from(ar)));
 
     let mut info = if response {
         format!("Standard query response 0x{id:04x}")
@@ -224,31 +199,28 @@ pub fn dissect(data: &[u8], ctx: &mut Ctx) -> Result<Node> {
         info.push_str(enum_name(DNS_RCODES, u64::from(rcode)).unwrap_or("Error"));
     }
 
-    // Questions.
+    // Questions, then answer, authority and additional sections.
     let mut pos = c.pos();
     let mut ok = true;
     if qd > 0 {
         let sec_start = ctx.base + pos;
-        let mut sec = Node::new("dns.queries", sec_start..sec_start, Value::None).with_source(s);
+        let sec = ctx.begin("dns.queries", sec_start..sec_start);
         for _ in 0..qd.min(MAX_RECORDS) {
-            match question(&msg, pos, s) {
-                Ok((q, next, text)) => {
+            match question(&msg, pos, ctx) {
+                Ok((next, text)) => {
                     info.push(' ');
                     info.push_str(&text);
-                    sec.push(q);
                     pos = next;
                 }
                 Err(e) => {
-                    sec.push(malformed(&msg, pos, s, &e));
+                    malformed(&msg, pos, ctx, &e);
                     ok = false;
                     break;
                 }
             }
         }
-        sec.range = sec_start..section_end(&sec, ctx.base + pos);
-        node.push(sec);
+        ctx.end_at(sec, section_end(&msg, pos, ok));
     }
-    // Answer, authority, additional.
     for (count, abbrev) in [
         (an, "dns.answers"),
         (ns, "dns.authority"),
@@ -258,77 +230,73 @@ pub fn dissect(data: &[u8], ctx: &mut Ctx) -> Result<Node> {
             continue;
         }
         let sec_start = ctx.base + pos;
-        let mut sec = Node::new(abbrev, sec_start..sec_start, Value::None).with_source(s);
+        let sec = ctx.begin(abbrev, sec_start..sec_start);
         for _ in 0..count.min(MAX_RECORDS) {
-            match record(&msg, pos, s) {
-                Ok((r, next, text)) => {
+            match record(&msg, pos, ctx) {
+                Ok((next, text)) => {
                     if abbrev == "dns.answers" {
                         info.push(' ');
                         info.push_str(&text);
                     }
-                    sec.push(r);
                     pos = next;
                 }
                 Err(e) => {
-                    sec.push(malformed(&msg, pos, s, &e));
+                    malformed(&msg, pos, ctx, &e);
                     ok = false;
                     break;
                 }
             }
         }
-        sec.range = sec_start..section_end(&sec, ctx.base + pos);
-        node.push(sec);
+        ctx.end_at(sec, section_end(&msg, pos, ok));
     }
     if !ok {
         info.push_str(" [Malformed]");
     }
     ctx.set_info(info);
-    Ok(node)
+    ctx.end();
+    let _ = dns;
+    Ok(())
 }
 
-/// A section spans its records; a trailing malformed node may reach past the
-/// last record parsed, so take the furthest extent of the children.
-fn section_end(sec: &Node, default_end: usize) -> usize {
-    sec.children
-        .iter()
-        .map(|c| c.range.end)
-        .fold(default_end, usize::max)
+/// A section spans its records; a trailing malformed node reaches to the end
+/// of the message, so extend the section over it.
+fn section_end(msg: &Msg, pos: usize, ok: bool) -> usize {
+    if ok {
+        msg.base + pos
+    } else {
+        msg.base + msg.bytes.len()
+    }
 }
 
-fn malformed(msg: &Msg, pos: usize, s: u8, e: &DissectError) -> Node {
-    Node::new(
+fn malformed(msg: &Msg, pos: usize, ctx: &mut Ctx, e: &DissectError) {
+    let text = format!("[Malformed Packet: dns] {e}");
+    ctx.leaf_text(
         "_ws.malformed",
         msg.base + pos..msg.base + msg.bytes.len(),
         Value::None,
-    )
-    .with_source(s)
-    .with_text(format!("[Malformed Packet: dns] {e}"))
+        &text,
+    );
 }
 
-fn question(msg: &Msg, pos: usize, s: u8) -> Result<(Node, usize, String)> {
+fn question(msg: &Msg, pos: usize, ctx: &mut Ctx) -> Result<(usize, String)> {
     let (name, after) = msg.name_at(pos)?;
-    let mut c = Cursor::new(msg.bytes, msg.base, s);
+    let mut c = Cursor::new(msg.bytes, msg.base, ctx.source);
     c.skip(after)?;
     let (ty, ty_r) = c.u16()?;
     let (class, class_r) = c.u16()?;
     let type_name = enum_name(DNS_TYPES, u64::from(ty)).unwrap_or("Unknown");
-    let mut q = Node::new("dns.qry", msg.base + pos..c.abs(), Value::None)
-        .with_source(s)
-        .with_text(format!(
-            "{name}: type {type_name}, class {}",
-            class_name(class)
-        ));
-    q.push(
-        Node::new(
-            "dns.qry.name",
-            msg.base + pos..msg.base + after,
-            Value::Str(name.clone()),
-        )
-        .with_source(s),
+    let text = format!("{name}: type {type_name}, class {}", class_name(class));
+    let q = ctx.begin_text("dns.qry", msg.base + pos..c.abs(), &text);
+    ctx.leaf(
+        "dns.qry.name",
+        msg.base + pos..msg.base + after,
+        Value::Str(name.clone()),
     );
-    q.push(Node::new("dns.qry.type", ty_r, Value::Unsigned(u64::from(ty))).with_source(s));
-    q.push(Node::new("dns.qry.class", class_r, Value::Unsigned(u64::from(class))).with_source(s));
-    Ok((q, c.pos(), format!("{type_name} {name}")))
+    ctx.leaf("dns.qry.type", ty_r, Value::Unsigned(u64::from(ty)));
+    ctx.leaf("dns.qry.class", class_r, Value::Unsigned(u64::from(class)));
+    ctx.end();
+    let _ = q;
+    Ok((c.pos(), format!("{type_name} {name}")))
 }
 
 fn class_name(class: u16) -> String {
@@ -341,9 +309,9 @@ fn class_name(class: u16) -> String {
     }
 }
 
-fn record(msg: &Msg, pos: usize, s: u8) -> Result<(Node, usize, String)> {
+fn record(msg: &Msg, pos: usize, ctx: &mut Ctx) -> Result<(usize, String)> {
     let (name, after) = msg.name_at(pos)?;
-    let mut c = Cursor::new(msg.bytes, msg.base, s);
+    let mut c = Cursor::new(msg.bytes, msg.base, ctx.source);
     c.skip(after)?;
     let (ty, ty_r) = c.u16()?;
     let (class, class_r) = c.u16()?;
@@ -353,30 +321,27 @@ fn record(msg: &Msg, pos: usize, s: u8) -> Result<(Node, usize, String)> {
     let (rdata, rd_r) = c.take(usize::from(rdlen))?;
     let type_name = enum_name(DNS_TYPES, u64::from(ty)).unwrap_or("Unknown");
 
-    let mut r = Node::new("dns.resp", msg.base + pos..c.abs(), Value::None).with_source(s);
-    r.push(
-        Node::new(
-            "dns.resp.name",
-            msg.base + pos..msg.base + after,
-            Value::Str(name.clone()),
-        )
-        .with_source(s),
+    let r = ctx.begin("dns.resp", msg.base + pos..c.abs());
+    ctx.leaf(
+        "dns.resp.name",
+        msg.base + pos..msg.base + after,
+        Value::Str(name.clone()),
     );
-    r.push(Node::new("dns.resp.type", ty_r, Value::Unsigned(u64::from(ty))).with_source(s));
-    r.push(Node::new("dns.resp.class", class_r, Value::Unsigned(u64::from(class))).with_source(s));
-    r.push(Node::new("dns.resp.ttl", ttl_r, Value::Unsigned(u64::from(ttl))).with_source(s));
-    r.push(Node::new("dns.resp.len", rdlen_r, Value::Unsigned(u64::from(rdlen))).with_source(s));
+    ctx.leaf("dns.resp.type", ty_r, Value::Unsigned(u64::from(ty)));
+    ctx.leaf("dns.resp.class", class_r, Value::Unsigned(u64::from(class)));
+    ctx.leaf("dns.resp.ttl", ttl_r, Value::Unsigned(u64::from(ttl)));
+    ctx.leaf("dns.resp.len", rdlen_r, Value::Unsigned(u64::from(rdlen)));
 
-    let mut rc = Cursor::new(rdata, rd_r.start, s);
+    let mut rc = Cursor::new(rdata, rd_r.start, ctx.source);
     let value: String = match ty {
         1 if rdata.len() == 4 => {
             let (a, ar) = rc.ipv4()?;
-            r.push(Node::new("dns.a", ar, Value::Ipv4(a)).with_source(s));
+            ctx.leaf("dns.a", ar, Value::Ipv4(a));
             ipv4_str(a)
         }
         28 if rdata.len() == 16 => {
             let (a, ar) = rc.ipv6()?;
-            r.push(Node::new("dns.aaaa", ar, Value::Ipv6(a)).with_source(s));
+            ctx.leaf("dns.aaaa", ar, Value::Ipv6(a));
             ipv6_str(a)
         }
         2 | 5 | 12 => {
@@ -386,27 +351,21 @@ fn record(msg: &Msg, pos: usize, s: u8) -> Result<(Node, usize, String)> {
                 5 => "dns.cname",
                 _ => "dns.ptr.domain_name",
             };
-            r.push(Node::new(abbrev, rd_r.clone(), Value::Str(target.clone())).with_source(s));
+            ctx.leaf(abbrev, rd_r.clone(), Value::Str(target.clone()));
             target
         }
         15 => {
             let (pref, pref_r) = rc.u16()?;
             let (mx, _) = msg.name_at(rd_pos + 2)?;
-            r.push(
-                Node::new(
-                    "dns.mx.preference",
-                    pref_r,
-                    Value::Unsigned(u64::from(pref)),
-                )
-                .with_source(s),
+            ctx.leaf(
+                "dns.mx.preference",
+                pref_r,
+                Value::Unsigned(u64::from(pref)),
             );
-            r.push(
-                Node::new(
-                    "dns.mx.mail_exchange",
-                    rd_r.start + 2..rd_r.end,
-                    Value::Str(mx.clone()),
-                )
-                .with_source(s),
+            ctx.leaf(
+                "dns.mx.mail_exchange",
+                rd_r.start + 2..rd_r.end,
+                Value::Str(mx.clone()),
             );
             format!("{pref} {mx}")
         }
@@ -416,7 +375,7 @@ fn record(msg: &Msg, pos: usize, s: u8) -> Result<(Node, usize, String)> {
                 let (len, _) = rc.u8()?;
                 let (txt, txt_r) = rc.take(usize::from(len))?;
                 let t = String::from_utf8_lossy(txt).into_owned();
-                r.push(Node::new("dns.txt", txt_r, Value::Str(t.clone())).with_source(s));
+                ctx.leaf("dns.txt", txt_r, Value::Str(t.clone()));
                 texts.push(t);
             }
             texts.join(" ")
@@ -424,68 +383,47 @@ fn record(msg: &Msg, pos: usize, s: u8) -> Result<(Node, usize, String)> {
         6 => {
             let (mname, p1) = msg.name_at(rd_pos)?;
             let (rname, p2) = msg.name_at(p1)?;
-            let mut c3 = Cursor::new(msg.bytes, msg.base, s);
+            let mut c3 = Cursor::new(msg.bytes, msg.base, ctx.source);
             c3.skip(p2)?;
             let (serial, serial_r) = c3.u32()?;
             let (refresh, refresh_r) = c3.u32()?;
             let (retry, retry_r) = c3.u32()?;
             let (expire, expire_r) = c3.u32()?;
             let (min, min_r) = c3.u32()?;
-            r.push(
-                Node::new(
-                    "dns.soa.mname",
-                    msg.base + rd_pos..msg.base + p1,
-                    Value::Str(mname.clone()),
-                )
-                .with_source(s),
+            ctx.leaf(
+                "dns.soa.mname",
+                msg.base + rd_pos..msg.base + p1,
+                Value::Str(mname.clone()),
             );
-            r.push(
-                Node::new(
-                    "dns.soa.rname",
-                    msg.base + p1..msg.base + p2,
-                    Value::Str(rname.clone()),
-                )
-                .with_source(s),
+            ctx.leaf(
+                "dns.soa.rname",
+                msg.base + p1..msg.base + p2,
+                Value::Str(rname.clone()),
             );
-            r.push(
-                Node::new(
-                    "dns.soa.serial_number",
-                    serial_r,
-                    Value::Unsigned(u64::from(serial)),
-                )
-                .with_source(s),
+            ctx.leaf(
+                "dns.soa.serial_number",
+                serial_r,
+                Value::Unsigned(u64::from(serial)),
             );
-            r.push(
-                Node::new(
-                    "dns.soa.refresh_interval",
-                    refresh_r,
-                    Value::Unsigned(u64::from(refresh)),
-                )
-                .with_source(s),
+            ctx.leaf(
+                "dns.soa.refresh_interval",
+                refresh_r,
+                Value::Unsigned(u64::from(refresh)),
             );
-            r.push(
-                Node::new(
-                    "dns.soa.retry_interval",
-                    retry_r,
-                    Value::Unsigned(u64::from(retry)),
-                )
-                .with_source(s),
+            ctx.leaf(
+                "dns.soa.retry_interval",
+                retry_r,
+                Value::Unsigned(u64::from(retry)),
             );
-            r.push(
-                Node::new(
-                    "dns.soa.expire_limit",
-                    expire_r,
-                    Value::Unsigned(u64::from(expire)),
-                )
-                .with_source(s),
+            ctx.leaf(
+                "dns.soa.expire_limit",
+                expire_r,
+                Value::Unsigned(u64::from(expire)),
             );
-            r.push(
-                Node::new(
-                    "dns.soa.minimum_ttl",
-                    min_r,
-                    Value::Unsigned(u64::from(min)),
-                )
-                .with_source(s),
+            ctx.leaf(
+                "dns.soa.minimum_ttl",
+                min_r,
+                Value::Unsigned(u64::from(min)),
             );
             format!("{mname} {rname} {serial}")
         }
@@ -494,44 +432,32 @@ fn record(msg: &Msg, pos: usize, s: u8) -> Result<(Node, usize, String)> {
             let (weight, weight_r) = rc.u16()?;
             let (port, port_r) = rc.u16()?;
             let (target, _) = msg.name_at(rd_pos + 6)?;
-            r.push(
-                Node::new("dns.srv.priority", prio_r, Value::Unsigned(u64::from(prio)))
-                    .with_source(s),
+            ctx.leaf("dns.srv.priority", prio_r, Value::Unsigned(u64::from(prio)));
+            ctx.leaf(
+                "dns.srv.weight",
+                weight_r,
+                Value::Unsigned(u64::from(weight)),
             );
-            r.push(
-                Node::new(
-                    "dns.srv.weight",
-                    weight_r,
-                    Value::Unsigned(u64::from(weight)),
-                )
-                .with_source(s),
-            );
-            r.push(
-                Node::new("dns.srv.port", port_r, Value::Unsigned(u64::from(port))).with_source(s),
-            );
-            r.push(
-                Node::new(
-                    "dns.srv.target",
-                    rd_r.start + 6..rd_r.end,
-                    Value::Str(target.clone()),
-                )
-                .with_source(s),
+            ctx.leaf("dns.srv.port", port_r, Value::Unsigned(u64::from(port)));
+            ctx.leaf(
+                "dns.srv.target",
+                rd_r.start + 6..rd_r.end,
+                Value::Str(target.clone()),
             );
             format!("{prio} {weight} {port} {target}")
         }
         _ => {
-            r.push(Node::new("dns.resp.data", rd_r, Value::Bytes).with_source(s));
+            ctx.leaf("dns.resp.data", rd_r, Value::Bytes);
             format!("{rdlen} bytes")
         }
     };
-    r.text = Some(
-        format!(
-            "{name}: type {type_name}, class {}, {value}",
-            class_name(class)
-        )
-        .into(),
+    let text = format!(
+        "{name}: type {type_name}, class {}, {value}",
+        class_name(class)
     );
-    Ok((r, c.pos(), format!("{type_name} {value}")))
+    ctx.set_text(r, &text);
+    ctx.end();
+    Ok((c.pos(), format!("{type_name} {value}")))
 }
 
 #[cfg(test)]

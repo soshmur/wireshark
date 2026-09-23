@@ -1027,8 +1027,39 @@ fn extra() -> &'static RwLock<Extra> {
     })
 }
 
+/// A direct-mapped memo of pointer -> id. Dissectors pass `&'static str`
+/// literals, so the same field is almost always the same pointer; a hit costs
+/// a shift and a compare instead of hashing the string. Verified by pointer
+/// equality, so a collision or a distinct-but-equal literal is simply a miss
+/// that falls through to the map.
+const MEMO_SLOTS: usize = 512;
+
+thread_local! {
+    static FIELD_MEMO: std::cell::RefCell<[(usize, u16); MEMO_SLOTS]> =
+        const { std::cell::RefCell::new([(0, 0); MEMO_SLOTS]) };
+}
+
+fn memo_slot(abbrev: &'static str) -> usize {
+    (abbrev.as_ptr() as usize >> 3) & (MEMO_SLOTS - 1)
+}
+
 /// Stable numeric id for a field abbrev.
 pub fn field_id(abbrev: &'static str) -> u16 {
+    let key = abbrev.as_ptr() as usize;
+    let slot = memo_slot(abbrev);
+    if let Some(hit) = FIELD_MEMO.with(|m| {
+        let m = m.borrow();
+        let (k, id) = m[slot];
+        (k == key).then_some(id)
+    }) {
+        return hit;
+    }
+    let id = field_id_uncached(abbrev);
+    FIELD_MEMO.with(|m| m.borrow_mut()[slot] = (key, id));
+    id
+}
+
+fn field_id_uncached(abbrev: &'static str) -> u16 {
     if let Some(id) = index().get(abbrev) {
         return *id;
     }
@@ -1218,7 +1249,7 @@ pub fn label(node: &NodeRef<'_>, data: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dissect::node::{Node, Tree};
+    use crate::dissect::node::Tree;
 
     #[test]
     fn abbrevs_are_unique() {
@@ -1234,52 +1265,66 @@ mod tests {
         let id = field_id("zz.unknown.field");
         assert!(usize::from(id) >= FIELDS.len());
         assert_eq!(field_abbrev(id), "zz.unknown.field");
+        // The pointer memo must return the same id on a second lookup.
         assert_eq!(field_id("zz.unknown.field"), id);
         assert_eq!(field_id_if_known("zz.never"), None);
+        // A distinct allocation with the same content resolves identically.
+        let same: &'static str = Box::leak("tcp.srcport".to_string().into_boxed_str());
+        assert_eq!(field_id(same), field_id("tcp.srcport"));
     }
 
-    fn one(node: Node) -> Tree {
-        Tree::from_layers(&[node])
+    fn leaf(abbrev: &'static str, range: std::ops::Range<usize>, value: Value) -> Tree {
+        Tree::build(|b| {
+            b.leaf(abbrev, 0, range, value);
+        })
     }
 
     #[test]
     fn labels_follow_kind() {
-        let t = one(Node::new("tcp.srcport", 34..36, Value::Unsigned(443)));
+        let t = leaf("tcp.srcport", 34..36, Value::Unsigned(443));
         assert_eq!(label(&t.get(0).unwrap(), &[]), "Source Port: 443");
-        let t = one(Node::new("eth.type", 12..14, Value::Unsigned(0x0800)));
+        let t = leaf("eth.type", 12..14, Value::Unsigned(0x0800));
         assert_eq!(label(&t.get(0).unwrap(), &[]), "Type: IPv4 (0x0800)");
-        let t = one(Node::new("ip.id", 18..20, Value::Unsigned(0x1c46)));
+        let t = leaf("ip.id", 18..20, Value::Unsigned(0x1c46));
         assert_eq!(
             label(&t.get(0).unwrap(), &[]),
             "Identification: 0x1c46 (7238)"
         );
-        let t = one(Node::new("tcp.flags.syn", 47..48, Value::Bool(true)));
+        let t = leaf("tcp.flags.syn", 47..48, Value::Bool(true));
         assert_eq!(label(&t.get(0).unwrap(), &[]), "Syn: Set");
-        let t = one(Node::new("data.data", 1..3, Value::Bytes));
+        let t = leaf("data.data", 1..3, Value::Bytes);
         assert_eq!(label(&t.get(0).unwrap(), &[0, 0xab, 0xcd]), "Data: abcd");
-        let t = one(Node::new("tcp", 0..0, Value::None).with_text("TCP, Src Port: 1"));
+        let t = leaf("ip.checksum.status", 24..26, Value::Unsigned(1));
+        assert_eq!(
+            label(&t.get(0).unwrap(), &[]),
+            "Header checksum status: Good"
+        );
+        let t = Tree::build(|b| {
+            let id = b.leaf("tcp", 0, 0..0, Value::None);
+            b.set_text(id, "TCP, Src Port: 1");
+        });
         assert_eq!(label(&t.get(0).unwrap(), &[]), "TCP, Src Port: 1");
-        let t = one(Node::new("nope.field", 0..0, Value::Unsigned(1)));
+        let t = leaf("nope.field", 0..0, Value::Unsigned(1));
         assert_eq!(label(&t.get(0).unwrap(), &[]), "nope.field: 1");
     }
 
     #[test]
     fn layer_labels_come_from_children() {
-        let eth = Node::new("eth", 0..14, Value::None).with_children(vec![
-            Node::new("eth.dst", 0..6, Value::Mac([0xff; 6])),
-            Node::new("eth.src", 6..12, Value::Mac([1, 2, 3, 4, 5, 6])),
-        ]);
-        let t = one(eth);
+        let t = Tree::build(|b| {
+            b.begin("eth", 0, 0..14);
+            b.leaf("eth.dst", 0, 0..6, Value::Mac([0xff; 6]));
+            b.leaf("eth.src", 0, 6..12, Value::Mac([1, 2, 3, 4, 5, 6]));
+            b.end();
+        });
         assert_eq!(
             label(&t.get(0).unwrap(), &[]),
             "Ethernet II, Src: 01:02:03:04:05:06, Dst: ff:ff:ff:ff:ff:ff"
         );
-        let arp = Node::new("arp", 0..28, Value::None).with_children(vec![Node::new(
-            "arp.opcode",
-            6..8,
-            Value::Unsigned(2),
-        )]);
-        let t = one(arp);
+        let t = Tree::build(|b| {
+            b.begin("arp", 0, 0..28);
+            b.leaf("arp.opcode", 0, 6..8, Value::Unsigned(2));
+            b.end();
+        });
         assert_eq!(
             label(&t.get(0).unwrap(), &[]),
             "Address Resolution Protocol (reply)"

@@ -2,13 +2,12 @@
 
 use crate::dissect::ctx::{Ctx, Proto};
 use crate::dissect::cursor::{Cursor, DissectError, Result};
-use crate::dissect::node::{Node, Value};
+use crate::dissect::node::Value;
 
 use super::{transport_checksum, CK_BAD, CK_GOOD, CK_NOT_PRESENT, CK_UNVERIFIED};
 
-pub fn dissect(data: &[u8], ctx: &mut Ctx) -> Result<Node> {
+pub fn dissect(data: &[u8], ctx: &mut Ctx) -> Result<()> {
     let mut c = Cursor::new(data, ctx.base, ctx.source);
-    let s = c.source();
     let start = c.abs();
     let (sport, sport_r) = c.u16()?;
     let (dport, dport_r) = c.u16()?;
@@ -23,19 +22,14 @@ pub fn dissect(data: &[u8], ctx: &mut Ctx) -> Result<Node> {
 
     ctx.set_protocol("udp");
     ctx.set_info(format!("{sport} → {dport} Len={}", len - 8));
-    let mut node = Node::new("udp", start..c.abs(), Value::None)
-        .with_source(s)
-        .reserve(6);
-    node.push(Node::new("udp.srcport", sport_r, Value::Unsigned(u64::from(sport))).with_source(s));
-    node.push(Node::new("udp.dstport", dport_r, Value::Unsigned(u64::from(dport))).with_source(s));
-    node.push(Node::new("udp.length", len_r, Value::Unsigned(u64::from(len))).with_source(s));
-    node.push(
-        Node::new(
-            "udp.checksum",
-            checksum_r.clone(),
-            Value::Unsigned(u64::from(checksum)),
-        )
-        .with_source(s),
+    let udp = ctx.begin("udp", start..c.abs());
+    ctx.leaf("udp.srcport", sport_r, Value::Unsigned(u64::from(sport)));
+    ctx.leaf("udp.dstport", dport_r, Value::Unsigned(u64::from(dport)));
+    ctx.leaf("udp.length", len_r, Value::Unsigned(u64::from(len)));
+    ctx.leaf(
+        "udp.checksum",
+        checksum_r.clone(),
+        Value::Unsigned(u64::from(checksum)),
     );
     let status = if checksum == 0 {
         CK_NOT_PRESENT
@@ -50,7 +44,9 @@ pub fn dissect(data: &[u8], ctx: &mut Ctx) -> Result<Node> {
             None => CK_UNVERIFIED,
         }
     };
-    node.push(Node::new("udp.checksum.status", checksum_r, Value::Unsigned(status)).with_source(s));
+    ctx.leaf("udp.checksum.status", checksum_r, Value::Unsigned(status));
+    ctx.end();
+    let _ = udp;
 
     // The payload is the next layer; it is not repeated as a child here, so
     // selecting the UDP row highlights the header it actually describes.
@@ -63,5 +59,5 @@ pub fn dissect(data: &[u8], ctx: &mut Ctx) -> Result<Node> {
     if payload_len > 0 {
         ctx.call_next_bounded(next, c.pos(), payload_len);
     }
-    Ok(node)
+    Ok(())
 }

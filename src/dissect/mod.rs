@@ -21,14 +21,44 @@ use netscope_ffi::LinkType;
 use crate::capture::{RawFrame, Timestamp};
 pub use ctx::{Ctx, Proto};
 pub use cursor::DissectError;
-pub use node::{Node, NodeRef, SourceId, Tree, Value};
+pub use node::{NodeId, NodeRef, SourceId, Tree, TreeBuilder, Value};
 pub use reassembly::Reassembly;
+
+/// An address for the packet list's source and destination columns. Kept
+/// typed and inline so a layer that is later overwritten (Ethernet MACs
+/// replaced by IP addresses) costs nothing; the text is formatted only for
+/// the rows actually drawn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Addr {
+    #[default]
+    None,
+    Mac([u8; 6]),
+    Ipv4([u8; 4]),
+    Ipv6([u8; 16]),
+}
+
+impl std::fmt::Display for Addr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Addr::None => Ok(()),
+            Addr::Mac(m) => f.write_str(&node::fmt_mac(*m)),
+            Addr::Ipv4(a) => f.write_str(&node::fmt_ipv4(*a)),
+            Addr::Ipv6(a) => f.write_str(&node::fmt_ipv6(*a)),
+        }
+    }
+}
+
+impl Addr {
+    pub fn is_none(&self) -> bool {
+        matches!(self, Addr::None)
+    }
+}
 
 /// Packet-list columns, computed once at dissection time.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Summary {
-    pub source: String,
-    pub destination: String,
+    pub source: Addr,
+    pub destination: Addr,
     pub protocol: &'static str,
     pub info: String,
 }
@@ -95,8 +125,6 @@ impl Frame {
         std::mem::size_of::<Frame>()
             + self.bytes.len()
             + self.tree.approx_size()
-            + self.summary.source.len()
-            + self.summary.destination.len()
             + self.summary.info.len()
             + self.extra_sources.iter().map(|b| b.len()).sum::<usize>()
     }
@@ -107,17 +135,11 @@ impl Frame {
     }
 }
 
-/// Largest `range.end` anywhere in a builder subtree, for source 0.
-fn max_end(n: &Node) -> usize {
-    let own = if n.source == 0 { n.range.end } else { 0 };
-    n.children.iter().map(max_end).fold(own, usize::max)
-}
-
 /// Upper bound on chained layers in one frame; guards against a dispatch
 /// cycle ever being introduced.
 const MAX_LAYERS: usize = 32;
 
-fn run(proto: Proto, data: &[u8], ctx: &mut Ctx) -> cursor::Result<Node> {
+fn run(proto: Proto, data: &[u8], ctx: &mut Ctx) -> cursor::Result<()> {
     match proto {
         Proto::Ethernet => proto::eth::dissect(data, ctx),
         Proto::Null => proto::null::dissect(data, ctx),
@@ -158,7 +180,19 @@ pub fn dissect(
 ) -> Frame {
     let bytes = raw.bytes;
     let mut ctx = Ctx::new(link_type, number, raw.ts, reassembly);
-    let mut layers: Vec<Node> = Vec::with_capacity(6);
+
+    // The `frame` pseudo-layer comes first; its protocol list is patched in
+    // once every layer has run.
+    let protocols_id = frame_layer(
+        &mut ctx,
+        number,
+        raw.ts,
+        bytes.len(),
+        raw.orig_len,
+        link_type,
+    );
+    // The frame layer spans everything; only real layers count as coverage.
+    ctx.tree.reset_max_end();
 
     let mut proto = link_dissector(link_type);
     let mut source: SourceId = 0;
@@ -178,27 +212,31 @@ pub fn dissect(
         let slice = owned.get(offset..end).unwrap_or(&[]);
         ctx.source = source;
         ctx.base = offset;
-        match run(proto, slice, &mut ctx) {
-            Ok(node) => layers.push(node),
-            Err(e) => {
-                // The layer could not be parsed. Show what it covers as a
-                // malformed node, and the bytes it could not consume as data
-                // beneath it, so the frame is still fully accounted for.
-                let mut bad = Node::new("_ws.malformed", offset..owned.len(), Value::None)
-                    .with_source(source)
-                    .with_text(format!("[Malformed Packet: {}] {e}", proto.name()));
-                if offset < owned.len() {
-                    ctx.base = offset;
-                    if let Ok(rest) = proto::data(slice, &mut ctx) {
-                        bad.push(rest);
-                    }
-                }
-                layers.push(bad);
-                ctx.set_info(format!("[Malformed Packet: {}] {e}", proto.name()));
-                ctx.summary.protocol = proto.name();
-                ctx.take_next();
-                break;
+        let depth = ctx.depth();
+        let layer_id = ctx.tree.next_id();
+        let wrote_any = ctx.tree.len();
+        if let Err(e) = run(proto, slice, &mut ctx) {
+            // The layer could not be parsed. Close whatever it left open,
+            // show what it covers as a malformed node, and put the bytes it
+            // could not consume beneath it so the frame stays accounted for.
+            ctx.restore_depth(depth);
+            if ctx.tree.len() > wrote_any {
+                // Keep the fields the layer did parse, and make its own range
+                // cover them rather than leaving it empty.
+                ctx.tree.fit_range(layer_id);
             }
+            let text = format!("[Malformed Packet: {}] {e}", proto.name());
+            let bad = ctx.begin_text("_ws.malformed", offset..owned.len(), &text);
+            if offset < owned.len() {
+                ctx.base = offset;
+                let _ = proto::data(slice, &mut ctx);
+            }
+            ctx.end();
+            let _ = bad;
+            ctx.set_info(text);
+            ctx.summary.protocol = proto.name();
+            ctx.take_next();
+            break;
         }
         match ctx.take_next() {
             Some(h) => {
@@ -214,13 +252,8 @@ pub fn dissect(
     // Bytes of the frame that no layer claimed are Ethernet padding or a
     // trailer; account for them once here, where the whole frame is visible,
     // rather than hanging them off a layer whose range does not cover them.
-    let covered = layers
-        .iter()
-        .filter(|n| n.source == 0)
-        .map(max_end)
-        .max()
-        .unwrap_or(0);
-    if covered < bytes.len() && !layers.is_empty() {
+    let covered = ctx.tree.max_end();
+    if covered < bytes.len() {
         let range = covered..bytes.len();
         let tail = bytes.get(range.clone()).unwrap_or(&[]);
         let (abbrev, text) = if link_type == LinkType::ETHERNET {
@@ -232,23 +265,16 @@ pub fn dissect(
         } else {
             ("data.data", format!("Trailing data: {} bytes", tail.len()))
         };
-        layers.push(Node::new(abbrev, range, Value::Bytes).with_text(text));
+        ctx.source = 0;
+        ctx.leaf_text(abbrev, range, Value::Bytes, &text);
     }
 
-    let protocols = ctx.protocols.join(":");
-    layers.insert(
-        0,
-        frame_node(
-            number,
-            raw.ts,
-            bytes.len(),
-            raw.orig_len,
-            link_type,
-            &protocols,
-        ),
-    );
-    let tree = Tree::from_layers(&layers);
-    let mut summary = ctx.summary;
+    // Copy the chain out so the builder can be borrowed mutably.
+    let mut chain = [""; 12];
+    let n = ctx.protocols().len();
+    chain[..n].copy_from_slice(ctx.protocols());
+    ctx.tree.set_str_joined(protocols_id, &chain[..n], b':');
+    let (tree, mut summary, extra_sources) = ctx.finish_tree();
     if summary.protocol.is_empty() {
         summary.protocol = "RAW";
     }
@@ -259,50 +285,38 @@ pub fn dissect(
         orig_len: raw.orig_len,
         tree,
         summary,
-        extra_sources: ctx.extra_sources,
+        extra_sources,
     }
 }
 
-fn frame_node(
+/// Write the `frame` pseudo-layer. Returns the id of `frame.protocols`, whose
+/// value is filled in once the chain has run.
+fn frame_layer(
+    ctx: &mut Ctx,
     number: u32,
     ts: Timestamp,
     caplen: usize,
     orig_len: u32,
     link_type: LinkType,
-    protocols: &str,
-) -> Node {
-    let mut root = Node::new("frame", 0..caplen, Value::None).reserve(6);
-    root.push(Node::new(
-        "frame.number",
-        0..0,
-        Value::Unsigned(u64::from(number)),
-    ));
-    root.push(Node::new(
+) -> NodeId {
+    let root = ctx.begin("frame", 0..caplen);
+    ctx.leaf("frame.number", 0..0, Value::Unsigned(u64::from(number)));
+    ctx.leaf(
         "frame.time_epoch",
         0..0,
         Value::Str(format!("{}.{:09}", ts.secs, ts.nanos)),
-    ));
-    root.push(Node::new(
-        "frame.len",
-        0..0,
-        Value::Unsigned(u64::from(orig_len)),
-    ));
-    root.push(Node::new(
-        "frame.cap_len",
-        0..0,
-        Value::Unsigned(caplen as u64),
-    ));
-    root.push(Node::new(
+    );
+    ctx.leaf("frame.len", 0..0, Value::Unsigned(u64::from(orig_len)));
+    ctx.leaf("frame.cap_len", 0..0, Value::Unsigned(caplen as u64));
+    ctx.leaf(
         "frame.encap_type",
         0..0,
         Value::Unsigned(u64::from(link_type.0.max(0) as u32)),
-    ));
-    root.push(Node::new(
-        "frame.protocols",
-        0..0,
-        Value::Str(protocols.to_string()),
-    ));
-    root
+    );
+    let protocols = ctx.leaf("frame.protocols", 0..0, Value::Str(String::new()));
+    ctx.end();
+    let _ = root;
+    protocols
 }
 
 #[cfg(test)]
@@ -333,8 +347,8 @@ mod tests {
         ]);
         let mut r = Reassembly::new();
         let f = dissect(LinkType::ETHERNET, 7, raw(&b), &mut r);
-        assert_eq!(f.summary.source, "10.0.0.1");
-        assert_eq!(f.summary.destination, "10.0.0.2");
+        assert_eq!(f.summary.source.to_string(), "10.0.0.1");
+        assert_eq!(f.summary.destination.to_string(), "10.0.0.2");
         assert_eq!(f.summary.protocol, "tcp");
         assert!(f.summary.info.contains("[SYN]"), "{}", f.summary.info);
         let names: Vec<&str> = f.layers().map(|n| n.abbrev()).collect();
