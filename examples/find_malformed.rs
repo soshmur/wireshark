@@ -8,7 +8,7 @@
 use std::time::{Duration, Instant};
 
 use netscope::capture::{Capture, CaptureConfig};
-use netscope::dissect::{registry, worker::Worker, Reassembly};
+use netscope::dissect::{registry, worker::Worker};
 use netscope::store::{Limits, Store};
 
 fn main() {
