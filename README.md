@@ -74,7 +74,8 @@ selected node, and the arrow keys move within whichever pane was clicked last.
 Reassembled IPv4 datagrams appear as a second tab in the hex pane. *View > Time
 display* switches between absolute (UTC), seconds since capture start, and
 delta from the previous packet. *Capture > Options* sets the snapshot length
-and the ring-buffer limits (default 1,000,000 frames or 2 GB, whichever first).
+and the ring-buffer limits (default 1,000,000 frames or 2 GB, whichever first),
+and whether checksums are validated — see below.
 The BPF field is a libpcap *capture* filter, applied in the driver. The
 separate **Display filter** bar below it selects among the frames already
 captured — see below.
@@ -127,6 +128,25 @@ Type errors are reported when the filter is compiled, not when it is
 evaluated, so `tcp.port == "http"` fails immediately with the column of the
 literal and the kinds that would have been accepted.
 
+### Checksums
+
+Checksum validation is **off by default**, as Wireshark ships, and the status
+fields read `Unverified`. This is because of checksum offload: your network
+card computes the TCP, UDP and ICMPv6 checksums after libpcap has already
+seen the packet, so frames your own machine sent look wrong. On this
+developer's laptop that was 20-47% of every live capture — all of it in the
+transport checksums, none in the IPv4 header, which the operating system
+computes itself.
+
+*Capture > Options* turns validation on, separately for the software-computed
+checksums (IPv4 header, ICMPv4) and the offloaded ones (TCP, UDP, ICMPv6).
+Turning either on or off dissects the frames already captured again, which
+takes about two seconds per million, so the detail tree, the filters and the
+colour rules never disagree about what was checked.
+
+The setting changes only what is *reported*. A frame dissects to the same
+tree either way.
+
 ### Colour rules
 
 *View > Colouring rulesâ¦* edits the list of rules the packet list is coloured
@@ -156,6 +176,9 @@ cargo run --release --example read_pcapng -- tests/fixtures/dns.pcapng   # disse
 cargo run --release --example bench_dissect                  # dissector throughput
 cargo run --release --example bench_store                    # dissect+store throughput
 cargo run --release --example filter_probe -- dns "dns.qry.name contains \"example\""  # try a filter on a fixture
+cargo run --release --example bench_filter                   # display-filter throughput
+cargo run --release --example live_filter -- "Wi-Fi" 20      # filters + colour rules on live traffic
+cargo run --release --example find_malformed -- "Wi-Fi" 20   # triage live frames that fail to dissect
 NETSCOPE_REGEN=1 cargo test --test fixtures                  # regenerate fixture captures
 cargo insta review                                           # review dissection snapshots
 cd fuzz && cargo +nightly fuzz run tcp -- -max_total_time=60   # fuzz one dissector
