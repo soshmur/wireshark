@@ -123,49 +123,62 @@ free text (malformed reasons, option summaries, TLS extension detail) keep it
 in an optional `text`, and protocol-layer summaries ("TCP, Src Port: 443, ...")
 are rendered from templates over child values so no string is built per layer.
 
-### The stored tree is flat
+### The tree is flat
 
-Dissectors still return the spec's `Node` pointer tree; it is the natural
-shape to build. What the store keeps is `Tree`: the same nodes flattened
-depth-first into one array of 28-byte records plus a byte arena for strings.
-A TCP frame has ~66 nodes; at 104 bytes per `Node` plus a heap allocation per
-child vector that was 8.5 KB and hundreds of allocations per frame, which
-paged the machine at 1e6 frames. Flat: ~1.9 KB per frame, two allocations.
-Structure (children, ancestors) is recovered from `depth`, which is cheap for
-a tree that is only ever walked top-down.
+A frame's tree is one array of 28-byte records plus a byte arena for strings,
+written depth-first as the dissectors run. A TCP frame has ~65 nodes; as a
+pointer tree at 104 bytes per node plus a heap allocation per child vector
+that was 8.5 KB and hundreds of allocations per frame, which paged the machine
+at 1e6 frames. Flat: ~1.9 KB per frame, two allocations. Structure (children,
+ancestors, subtree extent) is recovered from each node's `depth`, which is
+cheap for a tree that is only ever walked top-down.
 
-### Measured throughput and the remaining gap
+### Dissectors write flat records; measured throughput
 
-Ethernet/IPv4/TCP path, single thread, release, idle machine: **219-227k
-frames/s** (4.4-4.6 µs/frame) for a 66-node tree, at 3.0 KB accounted per
-frame. Through the store as well (dissect + append): 195k frames/s. The
-target is 500k/s/core, so this misses by a factor of about 2.2.
+Ethernet/IPv4/TCP path, single thread, release, idle machine: **538-559k
+frames/s** (1.79-1.86 µs/frame) for a 65-node tree, at 3.0 KB accounted per
+frame. Through the store as well (dissect + append): 366k frames/s. The target
+was 500k/s/core.
 
-Where the time goes, measured per frame: `tcp::dissect` 1.20 µs,
-`ipv4::dissect` 0.69 µs, `eth::dissect` 0.15 µs, `Tree::from_layers` 0.91 µs,
-`Ctx::new` 0.03 µs. The dissectors cost about 30 ns per node produced,
-dominated by building the intermediate `Node` tree — a 104-byte record moved
-into a child `Vec`, an allocation for every parent with children — and then a
-second pass to flatten it.
+Getting there needed the dissector signature to change from
+`(&[u8], &mut Ctx) -> Result<Node, DissectError>`, which the brief fixed, to
+`-> Result<(), DissectError>` with the tree written through `ctx.begin`,
+`ctx.leaf` and `ctx.end`. That was the owner's decision, taken explicitly
+rather than assumed: the intermediate pointer tree and the pass that flattened
+it were together about 45% of the cost, and no amount of tuning inside the old
+shape reaches the target.
 
-Two contained wins were taken. Checksum status became a numeric enum field
-instead of an allocated `String` (five allocations per frame), and the
-field-id index uses FNV-1a rather than SipHash, since the keys are short
-`&'static str` literals and not attacker-controlled; a lookup went from 47 ns
-to 16 ns. Together they moved 190k to ~225k frames/s and halved memory.
+The route from 219k to 545k, each step measured:
 
-Closing the remaining gap means dissectors writing flat records directly
-through a builder on `Ctx` (`ctx.leaf(...)`, `ctx.begin(...)`/`ctx.end()`),
-which removes both the intermediate tree and the flatten pass — together about
-45% of the current cost. That changes the dissector signature from
-`-> Result<Node>` to `-> Result<()>`, and the brief fixes that signature as
-`(&[u8], &mut Ctx) -> Result<Node, DissectError>`. Changing a stated
-non-negotiable is the owner's call, so the measurement is reported here and
-the rewrite has not been taken unilaterally.
+| change | frames/s |
+|---|---|
+| returning a `Node` tree, flattened afterwards | 219-227k |
+| dissectors write flat records directly | 372-413k |
+| summary addresses kept typed, formatted only when drawn | 442k |
+| label text formatted into the arena, no `String` | 468k |
+| flag names joined in a stack buffer, not a `Vec` | 538-559k |
 
-Benchmarks are sensitive to machine load: the same binary measures 132-144k
-frames/s while sixteen fuzz targets are running. The figures above are from an
-otherwise idle machine, which is the number to compare against the target.
+Two smaller wins came earlier: checksum status became a numeric enum field
+rather than an allocated `String` (five allocations per frame), and the
+field-id index uses FNV-1a with a memo keyed on the `&'static str` pointer,
+taking a lookup from 47 ns to 2.3 ns. The keys are compile-time literals and
+not attacker-controlled, so a weak hash is appropriate; the memo is verified
+by pointer equality, so a collision is a miss, never a wrong answer.
+
+What remains, for reference: writing the 65 nodes costs ~670 ns, `Ctx::new`
+~64 ns (it allocates the builder's two buffers), and the dissectors' own
+parsing the rest. Benchmarks are sensitive to machine load — the same binary
+measures 132-144k while sixteen fuzz targets are running — so the figures
+above are from an otherwise idle machine.
+
+### Builder discipline: depth is restored centrally
+
+A dissector may return `Err` from inside one or more open containers. Rather
+than unwinding by hand at every `?`, the caller records `ctx.depth()` before
+the call and restores it on error: the driver does this per layer, and option
+loops do it per option. The partial subtree is kept, and the layer's own range
+is fitted to the fields it did parse (`TreeBuilder::fit_range`), so a
+truncated IPv6 header now shows its addresses rather than vanishing.
 
 ### Reassembled data is a second data source
 

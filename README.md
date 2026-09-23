@@ -17,6 +17,9 @@ native binary with an immediate-mode UI.
 | 0 | Device enumeration, privilege preflight, capture thread skeleton, window | done |
 | 1 | Packet list, hex/ASCII pane, ring buffer, BPF capture filter | done |
 | 2 | Dissectors: Ethernet … TLS, IPv4 reassembly, detail tree, fuzz targets | done |
+
+Dissection runs at 538-559k frames/s on one core for the Ethernet/IPv4/TCP
+path; see [DECISIONS.md](DECISIONS.md) for the measurements.
 | 3 | Display filter language | — |
 | 4 | Conversations, reassembly, expert info | — |
 | 5 | pcap/pcapng I/O, statistics | — |
