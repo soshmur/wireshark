@@ -1282,6 +1282,7 @@ dependencies = [
  "egui_extras",
  "insta",
  "netscope-ffi",
+ "regex",
  "serde",
  "toml",
 ]
