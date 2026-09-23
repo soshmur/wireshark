@@ -239,3 +239,22 @@ IPv6 option length) — a length byte above 31 was enough. Those are now widened
 before the arithmetic. The lesson is kept as a rule: any value read from a
 packet is widened to `usize`/`u64` before it takes part in arithmetic, even
 when the result is only used to format a label.
+
+### Live traffic found what neither tests nor fuzzing did
+
+Running the capture against a real Wi-Fi interface surfaced 2.7 KB and 9.4 KB
+"frames" carrying `ip.len = 0` and a zero header checksum. These are TCP
+segmentation offload: the NIC splits the buffer and fills both fields in per
+segment, after libpcap has already seen the packet. The dissector derived a
+zero-length payload from the zero total length, handed TCP nothing, and
+reported `[Malformed Packet: tcp]`.
+
+Neither the fixtures nor the fuzzers would have found it. The fixtures were
+built from the specification, where total length is never zero; the fuzzers
+did generate zero-length frames, but a zero total length only *looks* wrong
+in the absence of knowledge about offload — nothing crashed, so nothing was
+reported. It took traffic from a real NIC on a real host.
+
+The rule taken from it: every phase gets a live run against real traffic, and
+any frame carrying a `[Malformed]` node is triaged rather than assumed to be
+genuinely malformed. `examples/find_malformed.rs` exists for exactly that.
