@@ -186,6 +186,22 @@ fn ipv4_fixture() -> Fixture {
     let mut padded = eth_ipv4(1, &icmp_echo(false, 0x1234, 1, b""));
     padded.resize(60, 0);
     let unknown_proto = eth_ipv4(0x63, &[1, 2, 3, 4, 5, 6, 7, 8]);
+    // TCP segmentation offload: the NIC fills in total length and checksum
+    // per segment, so a captured frame carries zero in both.
+    let mut tso = Ipv4::new(IP_A, IP_B, 6);
+    tso.total_len = Some(0);
+    tso.bad_checksum = false;
+    let mut t = Tcp::new(52100, 443, PSH | ACK);
+    t.seq = 1;
+    let mut tso_frame = eth(
+        MAC_B,
+        MAC_A,
+        0x0800,
+        &tso.build(&tcp4(IP_A, IP_B, &t, &[0xcd; 120])),
+    );
+    // Zero the header checksum the way an offloading NIC leaves it.
+    tso_frame[24] = 0;
+    tso_frame[25] = 0;
     f(
         "ipv4",
         vec![
@@ -201,6 +217,7 @@ fn ipv4_fixture() -> Fixture {
             redirect,
             padded,
             unknown_proto,
+            tso_frame,
         ],
     )
 }

@@ -458,6 +458,7 @@ pub static FIELDS: &[FieldDef] = &[
         Unsigned(Dec),
     ),
     f("ip.len", "Total Length", Unsigned(Dec)),
+    f("ip.len_tso", "Segmentation offload", Bool),
     f("ip.id", "Identification", Unsigned(HexDec)),
     f("ip.flags", "Flags", Unsigned(Hex)),
     f("ip.flags.rb", "Reserved bit", Bool),

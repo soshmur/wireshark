@@ -75,6 +75,7 @@ pub fn dissect(data: &[u8], ctx: &mut Ctx) -> Result<()> {
     );
     ctx.end();
     let _ = ds;
+    let total_len_r_for_note = total_len_r.clone();
     ctx.leaf("ip.len", total_len_r, Value::Unsigned(u64::from(total_len)));
     ctx.leaf("ip.id", id_r, Value::Unsigned(u64::from(id)));
 
@@ -108,11 +109,18 @@ pub fn dissect(data: &[u8], ctx: &mut Ctx) -> Result<()> {
     ctx.leaf("ip.ttl", ttl_r, Value::Unsigned(u64::from(ttl)));
     ctx.leaf("ip.proto", proto_r, Value::Unsigned(u64::from(proto)));
 
-    // Header checksum over the whole header including options.
-    let status = match data.get(..ihl).map(|h| inet_checksum(&[h])) {
-        Some(0) => CK_GOOD,
-        Some(_) => CK_BAD,
-        None => CK_UNVERIFIED,
+    // Header checksum over the whole header including options. A zero field
+    // means the sending NIC has not filled it in yet (checksum offload on a
+    // locally originated packet), so it cannot be judged rather than being
+    // wrong.
+    let status = if checksum == 0 {
+        CK_UNVERIFIED
+    } else {
+        match data.get(..ihl).map(|h| inet_checksum(&[h])) {
+            Some(0) => CK_GOOD,
+            Some(_) => CK_BAD,
+            None => CK_UNVERIFIED,
+        }
     };
     ctx.leaf(
         "ip.checksum",
@@ -160,14 +168,30 @@ pub fn dissect(data: &[u8], ctx: &mut Ctx) -> Result<()> {
     // children, so the container is closed only at the end.
     let header_end = c.abs();
 
-    // The payload is bounded by total length (and by what was captured).
-    let payload_len = usize::from(total_len)
-        .saturating_sub(ihl)
-        .min(c.remaining());
+    // The payload is bounded by total length, and by what was captured. A
+    // total length of zero on a frame that plainly has a payload is TCP
+    // segmentation offload: the NIC will split the buffer and fill the field
+    // in per segment, so the captured length is the only truth available.
+    let tso = total_len == 0 && c.remaining() > 0;
+    let payload_len = if tso {
+        c.remaining()
+    } else {
+        usize::from(total_len)
+            .saturating_sub(ihl)
+            .min(c.remaining())
+    };
     let payload_off = c.pos();
     let payload_end = payload_off + payload_len;
     let next = ipproto_next(proto);
     let proto_name = enum_name(IPPROTOS, u64::from(proto)).unwrap_or("Unknown");
+    if tso {
+        ctx.leaf_textf(
+            "ip.len_tso",
+            total_len_r_for_note.clone(),
+            Value::Bool(true),
+            format_args!("[Total length 0: segmentation offload, {payload_len} bytes captured]"),
+        );
+    }
     if next == Proto::Data {
         ctx.set_info(format!("{proto_name} ({proto})"));
     }
