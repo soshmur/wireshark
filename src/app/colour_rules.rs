@@ -6,8 +6,8 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::filter::{compile, matches, FilterError, Test};
 use crate::dissect::Frame;
+use crate::filter::{compile, matches, FilterError, Test};
 
 /// A colour rule as it is stored in the config file.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -22,12 +22,7 @@ pub struct Rule {
 }
 
 impl Rule {
-    fn new(
-        name: &str,
-        filter: &str,
-        background: [u8; 3],
-        foreground: [u8; 3],
-    ) -> Rule {
+    fn new(name: &str, filter: &str, background: [u8; 3], foreground: [u8; 3]) -> Rule {
         Rule {
             name: name.to_string(),
             filter: filter.to_string(),
@@ -180,7 +175,9 @@ pub fn editor(ctx: &egui::Context, open: &mut bool, rules: &mut Rules) -> bool {
             egui::ScrollArea::vertical().show(ui, |ui| {
                 let count = rules.rules().len();
                 for i in 0..count {
-                    let error = rules.error(i).map(|e| format!("column {}: {}", e.column + 1, e.message));
+                    let error = rules
+                        .error(i)
+                        .map(|e| format!("column {}: {}", e.column + 1, e.message));
                     let rule = &mut rules.rules_mut()[i];
                     ui.horizontal(|ui| {
                         changed |= ui.checkbox(&mut rule.enabled, "").changed();

@@ -407,27 +407,18 @@ mod tests {
         assert!(parse(&ok).is_ok());
 
         // Nesting is depth, not count: a long flat chain is fine.
-        let long_chain = (0..500)
-            .map(|_| "tcp")
-            .collect::<Vec<_>>()
-            .join(" || ");
+        let long_chain = (0..500).map(|_| "tcp").collect::<Vec<_>>().join(" || ");
         assert!(parse(&long_chain).is_ok());
 
         // And parentheses closed before the next one opens do not accumulate.
-        let wide = (0..500)
-            .map(|_| "(tcp)")
-            .collect::<Vec<_>>()
-            .join(" || ");
+        let wide = (0..500).map(|_| "(tcp)").collect::<Vec<_>>().join(" || ");
         assert!(parse(&wide).is_ok());
     }
 
     #[test]
     fn word_operators_are_accepted() {
         assert!(matches!(parse("arp or tcp").expect("parse"), Expr::Or(_)));
-        assert!(matches!(
-            parse("arp and tcp").expect("parse"),
-            Expr::And(_)
-        ));
+        assert!(matches!(parse("arp and tcp").expect("parse"), Expr::And(_)));
         assert!(matches!(parse("not arp").expect("parse"), Expr::Not(_)));
     }
 

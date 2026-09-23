@@ -398,8 +398,8 @@ mod tests {
     fn finds_forwards_backwards_and_wraps() {
         let v = view(10);
         // The source MAC's last byte is the frame index, so this is frame 4.
-        let q = compile(Kind::DisplayFilter, "eth.src[5] == 3", false, Scope::List)
-            .expect("compile");
+        let q =
+            compile(Kind::DisplayFilter, "eth.src[5] == 3", false, Scope::List).expect("compile");
         assert_eq!(search(&v, None, Direction::Forward, &q), Some(3));
         // Starting on the hit and searching again wraps right back to it,
         // since it is the only one.
@@ -428,8 +428,8 @@ mod tests {
     #[test]
     fn a_query_matching_nothing_finds_nothing() {
         let v = view(5);
-        let q = compile(Kind::String, "no such text anywhere", false, Scope::List)
-            .expect("compile");
+        let q =
+            compile(Kind::String, "no such text anywhere", false, Scope::List).expect("compile");
         assert_eq!(search(&v, None, Direction::Forward, &q), None);
         assert_eq!(search(&v, Some(2), Direction::Backward, &q), None);
     }

@@ -113,7 +113,7 @@ pub fn dissect(data: &[u8], ctx: &mut Ctx) -> Result<()> {
     // means the sending NIC has not filled it in yet (checksum offload on a
     // locally originated packet), so it cannot be judged rather than being
     // wrong.
-    let status = if checksum == 0 {
+    let status = if !ctx.options().validate_ip_checksums || checksum == 0 {
         CK_UNVERIFIED
     } else {
         match data.get(..ihl).map(|h| inet_checksum(&[h])) {

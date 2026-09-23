@@ -119,3 +119,76 @@ fn single_byte_corruptions_hold() {
         }
     }
 }
+
+/// Checksum validation is a reporting setting, not a parsing one: turning it
+/// off must change only the `*.checksum.status` values, never the shape of
+/// the tree. `netscope` ships with it off, matching Wireshark, because a NIC
+/// computes the transport checksums after libpcap has seen the packet.
+#[test]
+fn checksum_validation_changes_reporting_and_nothing_else() {
+    use netscope::dissect::{dissect_with, Options};
+
+    const STATUS_FIELDS: &[&str] = &[
+        "ip.checksum.status",
+        "icmp.checksum.status",
+        "icmpv6.checksum.status",
+        "tcp.checksum.status",
+        "udp.checksum.status",
+    ];
+    // CK_UNVERIFIED, from src/dissect/proto/mod.rs.
+    const UNVERIFIED: u64 = 2;
+    const NOT_PRESENT: u64 = 3;
+
+    let mut verified_any = false;
+    for fx in common::fixtures::all() {
+        let link = LinkType(i32::from(fx.link_type));
+        let mut on = Reassembly::new();
+        let mut off = Reassembly::new();
+        for (i, bytes) in fx.frames.iter().enumerate() {
+            let n = i as u32 + 1;
+            let a = dissect_with(link, n, raw(bytes), &mut on, Options::default());
+            let b = dissect_with(link, n, raw(bytes), &mut off, Options::no_checksums());
+
+            // Same shape: same nodes, same ranges, same sources.
+            assert_eq!(
+                a.tree.len(),
+                b.tree.len(),
+                "{}#{n}: node count changed",
+                fx.name
+            );
+            for (x, y) in a.tree.iter().zip(b.tree.iter()) {
+                assert_eq!(x.abbrev(), y.abbrev(), "{}#{n}", fx.name);
+                assert_eq!(x.range(), y.range(), "{}#{n}: {}", fx.name, x.abbrev());
+                assert_eq!(x.source(), y.source(), "{}#{n}: {}", fx.name, x.abbrev());
+                assert_eq!(x.depth(), y.depth(), "{}#{n}: {}", fx.name, x.abbrev());
+            }
+
+            // With validation off, no status is ever Good or Bad.
+            for node in b.tree.iter() {
+                if STATUS_FIELDS.contains(&node.abbrev()) {
+                    let v = node.unsigned().unwrap_or(UNVERIFIED);
+                    assert!(
+                        v == UNVERIFIED || v == NOT_PRESENT,
+                        "{}#{n}: {} reported {v} with validation off",
+                        fx.name,
+                        node.abbrev()
+                    );
+                }
+            }
+            // With it on, the fixtures do produce verdicts - otherwise this
+            // test would pass against a dissector that never verifies.
+            for node in a.tree.iter() {
+                if STATUS_FIELDS.contains(&node.abbrev())
+                    && node.unsigned().is_some_and(|v| v < UNVERIFIED)
+                {
+                    verified_any = true;
+                }
+            }
+        }
+    }
+    assert!(
+        verified_any,
+        "no fixture produced a checksum verdict with validation on"
+    );
+    let _ = registry::all();
+}

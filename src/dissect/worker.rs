@@ -10,6 +10,7 @@ use crossbeam_channel::{Receiver, RecvTimeoutError};
 use netscope_ffi::LinkType;
 
 use crate::capture::RawFrame;
+use crate::dissect::Options;
 use crate::dissect::Reassembly;
 use crate::store::Store;
 
@@ -26,12 +27,17 @@ pub struct Worker {
 impl Worker {
     /// Start a worker consuming `rx` into `store`. It exits when the sender
     /// side (the capture thread) goes away and the channel is drained.
-    pub fn spawn(rx: Receiver<RawFrame>, store: Arc<Store>, link_type: LinkType) -> Worker {
+    pub fn spawn(
+        rx: Receiver<RawFrame>,
+        store: Arc<Store>,
+        link_type: LinkType,
+        options: Options,
+    ) -> Worker {
         let processed = Arc::new(AtomicU64::new(0));
         let counter = Arc::clone(&processed);
         let join = thread::Builder::new()
             .name("netscope-dissect".into())
-            .spawn(move || run(rx, store, link_type, counter))
+            .spawn(move || run(rx, store, link_type, counter, options))
             .ok();
         Worker { join, processed }
     }
@@ -49,7 +55,13 @@ impl Worker {
     }
 }
 
-fn run(rx: Receiver<RawFrame>, store: Arc<Store>, link_type: LinkType, processed: Arc<AtomicU64>) {
+fn run(
+    rx: Receiver<RawFrame>,
+    store: Arc<Store>,
+    link_type: LinkType,
+    processed: Arc<AtomicU64>,
+    options: Options,
+) {
     let mut next = store.next_number();
     let mut batch = Vec::with_capacity(BATCH);
     let mut reassembly = Reassembly::new();
@@ -59,21 +71,23 @@ fn run(rx: Receiver<RawFrame>, store: Arc<Store>, link_type: LinkType, processed
             Err(RecvTimeoutError::Timeout) => continue,
             Err(RecvTimeoutError::Disconnected) => break,
         };
-        batch.push(Arc::new(crate::dissect::dissect(
+        batch.push(Arc::new(crate::dissect::dissect_with(
             link_type,
             next,
             first,
             &mut reassembly,
+            options,
         )));
         next = next.wrapping_add(1);
         while batch.len() < BATCH {
             match rx.try_recv() {
                 Ok(f) => {
-                    batch.push(Arc::new(crate::dissect::dissect(
+                    batch.push(Arc::new(crate::dissect::dissect_with(
                         link_type,
                         next,
                         f,
                         &mut reassembly,
+                        options,
                     )));
                     next = next.wrapping_add(1);
                 }

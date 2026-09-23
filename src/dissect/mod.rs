@@ -19,7 +19,7 @@ use std::sync::Arc;
 use netscope_ffi::LinkType;
 
 use crate::capture::{RawFrame, Timestamp};
-pub use ctx::{Ctx, Proto};
+pub use ctx::{Ctx, Options, Proto};
 pub use cursor::DissectError;
 pub use node::{NodeId, NodeRef, SourceId, Tree, TreeBuilder, Value};
 pub use reassembly::Reassembly;
@@ -178,8 +178,20 @@ pub fn dissect(
     raw: RawFrame,
     reassembly: &mut Reassembly,
 ) -> Frame {
+    dissect_with(link_type, number, raw, reassembly, Options::default())
+}
+
+/// Dissect under explicit settings. Only what a dissector *reports* differs;
+/// the tree has the same shape either way.
+pub fn dissect_with(
+    link_type: LinkType,
+    number: u32,
+    raw: RawFrame,
+    reassembly: &mut Reassembly,
+    options: Options,
+) -> Frame {
     let bytes = raw.bytes;
-    let mut ctx = Ctx::new(link_type, number, raw.ts, reassembly);
+    let mut ctx = Ctx::with_options(link_type, number, raw.ts, reassembly, options);
 
     // The `frame` pseudo-layer comes first; its protocol list is patched in
     // once every layer has run.

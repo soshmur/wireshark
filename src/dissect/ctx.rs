@@ -76,7 +76,47 @@ pub struct Handoff {
     pub len: Option<usize>,
 }
 
+/// Dissection settings. These change what a dissector *reports*, never what
+/// it parses, so a frame dissected under either setting has the same shape.
+///
+/// The default is to verify, because a caller that has not thought about
+/// checksum offload is better served by being told a packet looks wrong than
+/// by silence. The application overrides it: `netscope` ships with both off,
+/// as Wireshark does, because on a real capture a NIC computes the transport
+/// checksums after libpcap has already seen the packet and 20-40% of frames
+/// would be flagged for no reason. See DECISIONS.md.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Options {
+    /// Verify the IPv4 header checksum and the ICMPv4 checksum. Both are
+    /// computed in software, so they are rarely wrong for a benign reason.
+    pub validate_ip_checksums: bool,
+    /// Verify the TCP, UDP and ICMPv6 checksums. These cover a pseudo-header
+    /// and are the ones NICs offload.
+    pub validate_transport_checksums: bool,
+}
+
+impl Default for Options {
+    fn default() -> Options {
+        Options {
+            validate_ip_checksums: true,
+            validate_transport_checksums: true,
+        }
+    }
+}
+
+impl Options {
+    /// Nothing verified: every checksum status reports `Unverified`.
+    pub fn no_checksums() -> Options {
+        Options {
+            validate_ip_checksums: false,
+            validate_transport_checksums: false,
+        }
+    }
+}
+
 pub struct Ctx<'a> {
+    /// Settings in force for this frame.
+    options: Options,
     pub link_type: LinkType,
     pub frame_number: u32,
     pub ts: Timestamp,
@@ -108,7 +148,18 @@ impl<'a> Ctx<'a> {
         ts: Timestamp,
         reassembly: &'a mut Reassembly,
     ) -> Ctx<'a> {
+        Ctx::with_options(link_type, frame_number, ts, reassembly, Options::default())
+    }
+
+    pub fn with_options(
+        link_type: LinkType,
+        frame_number: u32,
+        ts: Timestamp,
+        reassembly: &'a mut Reassembly,
+        options: Options,
+    ) -> Ctx<'a> {
         Ctx {
+            options,
             link_type,
             frame_number,
             ts,
@@ -124,6 +175,11 @@ impl<'a> Ctx<'a> {
             next: None,
             nesting: 0,
         }
+    }
+
+    /// The dissection settings in force.
+    pub fn options(&self) -> Options {
+        self.options
     }
 
     // ---- tree building ----------------------------------------------------

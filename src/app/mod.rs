@@ -112,6 +112,9 @@ pub struct NetscopeApp {
     colours: colour_rules::Rules,
     find: find::FindBar,
     store_stats: StoreStats,
+    /// Link type the stored frames were dissected under, so they can be
+    /// dissected again if a dissection preference changes.
+    link_type: netscope_ffi::LinkType,
     list: ListState,
     tree: TreeState,
     hex: HexState,
@@ -155,6 +158,7 @@ impl NetscopeApp {
             colours,
             find: find::FindBar::default(),
             store_stats: StoreStats::default(),
+            link_type: netscope_ffi::LinkType::ETHERNET,
             store,
             show_devices: true,
             show_settings: false,
@@ -175,12 +179,15 @@ impl NetscopeApp {
     fn preload_synthetic(&mut self, count: u64) {
         let mut batch = Vec::with_capacity(1024);
         let mut reassembly = crate::dissect::Reassembly::new();
+        let options = self.config.dissect_options();
+        self.link_type = netscope_ffi::LinkType::ETHERNET;
         for i in 0..count {
-            batch.push(Arc::new(crate::dissect::dissect(
+            batch.push(Arc::new(crate::dissect::dissect_with(
                 netscope_ffi::LinkType::ETHERNET,
                 (i + 1) as u32,
                 crate::synthetic::raw_frame(i),
                 &mut reassembly,
+                options,
             )));
             if batch.len() == 1024 {
                 self.store
@@ -244,7 +251,13 @@ impl NetscopeApp {
                     ..ListState::default()
                 };
                 self.capture_error = None;
-                self.worker = Some(Worker::spawn(rx, Arc::clone(&self.store), cap.link_type()));
+                self.link_type = cap.link_type();
+                self.worker = Some(Worker::spawn(
+                    rx,
+                    Arc::clone(&self.store),
+                    cap.link_type(),
+                    self.config.dissect_options(),
+                ));
                 self.capture = Some(cap);
                 self.rate = RateMeter::new();
                 self.show_devices = false;
@@ -275,6 +288,41 @@ impl NetscopeApp {
         if let Err(e) = self.config.save() {
             self.config_error = Some(format!("Could not save config: {e}"));
         }
+    }
+
+    /// Dissect every stored frame again under the current preferences.
+    ///
+    /// Filtering never re-dissects, but a *dissection* preference changing
+    /// is exactly the case that must: the stored trees are what the detail
+    /// pane, the filter engine and the colour rules all read, so leaving
+    /// them as they are would show verdicts the settings say were never
+    /// made. Only reachable while not capturing, and it costs one pass at
+    /// dissection speed - roughly two seconds for a million frames.
+    fn redissect(&mut self) {
+        let snapshot = self.store.snapshot();
+        if snapshot.is_empty() {
+            return;
+        }
+        let options = self.config.dissect_options();
+        let mut reassembly = crate::dissect::Reassembly::new();
+        let mut frames = Vec::with_capacity(snapshot.len());
+        for frame in snapshot.iter() {
+            frames.push(Arc::new(crate::dissect::dissect_with(
+                self.link_type,
+                frame.number,
+                crate::capture::RawFrame {
+                    ts: frame.ts,
+                    caplen: frame.bytes.len() as u32,
+                    orig_len: frame.orig_len,
+                    bytes: Arc::clone(&frame.bytes),
+                },
+                &mut reassembly,
+                options,
+            )));
+        }
+        self.store.replace(frames);
+        self.rebuild_view();
+        self.store_stats = self.store.stats();
     }
 
     fn apply_limits(&mut self) {
@@ -768,7 +816,13 @@ impl eframe::App for NetscopeApp {
             ui.add_enabled_ui(!self.show_first_run, |ui| {
                 let before = self.list.selected;
                 let colours = self.config.colouring.then_some(&self.colours);
-                packet_list::show(ui, &self.view, self.config.time_mode, colours, &mut self.list);
+                packet_list::show(
+                    ui,
+                    &self.view,
+                    self.config.time_mode,
+                    colours,
+                    &mut self.list,
+                );
                 if self.list.selected != before {
                     self.focus = Focus::List;
                 }
@@ -787,9 +841,13 @@ impl eframe::App for NetscopeApp {
         }
         if self.show_settings {
             let capturing = self.is_capturing();
+            let before = self.config.dissect_options();
             if settings::show(ctx, &mut self.show_settings, &mut self.config, capturing) {
                 self.apply_limits();
                 self.persist_config();
+                if self.config.dissect_options() != before {
+                    self.redissect();
+                }
             }
         }
         if self.show_colour_rules

@@ -68,7 +68,12 @@ fn main() {
 
     // The real pipeline: worker dissects into the store; we poll like the UI.
     let store = Store::new(Limits::default());
-    let mut worker = Worker::spawn(rx, std::sync::Arc::clone(&store), lt);
+    let mut worker = Worker::spawn(
+        rx,
+        std::sync::Arc::clone(&store),
+        lt,
+        netscope::dissect::Options::default(),
+    );
     let deadline = Instant::now() + Duration::from_secs(secs);
     while Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(100));

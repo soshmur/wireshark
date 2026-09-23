@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use crate::app::colour_rules::{self, Rule};
+use crate::dissect::Options;
 
 /// How the packet list's time column is rendered.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -37,6 +38,13 @@ pub struct Config {
     pub time_mode: TimeMode,
     /// Keep the packet list scrolled to the newest frame while capturing.
     pub auto_scroll: bool,
+    /// Verify IPv4 header and ICMPv4 checksums. Off by default, as
+    /// Wireshark ships: see `validate_transport_checksums`.
+    pub validate_ip_checksums: bool,
+    /// Verify TCP, UDP and ICMPv6 checksums. Off by default because a NIC
+    /// computes them after libpcap has seen the packet, so on a real capture
+    /// 20-40% of frames would be reported bad for no reason.
+    pub validate_transport_checksums: bool,
     /// Colour packet-list rows by the rules below.
     pub colouring: bool,
     /// Colour rules, in priority order: the first whose display filter
@@ -56,6 +64,8 @@ impl Default for Config {
             ring_max_bytes: 2 * 1024 * 1024 * 1024,
             time_mode: TimeMode::SinceStart,
             auto_scroll: true,
+            validate_ip_checksums: false,
+            validate_transport_checksums: false,
             colouring: true,
             colour_rules: colour_rules::defaults(),
         }
@@ -63,6 +73,14 @@ impl Default for Config {
 }
 
 impl Config {
+    /// The dissection settings these preferences describe.
+    pub fn dissect_options(&self) -> Options {
+        Options {
+            validate_ip_checksums: self.validate_ip_checksums,
+            validate_transport_checksums: self.validate_transport_checksums,
+        }
+    }
+
     /// `%APPDATA%\netscope\config\config.toml`, `~/.config/netscope/config.toml`,
     /// `~/Library/Application Support/netscope/config.toml`.
     pub fn path() -> Option<PathBuf> {
@@ -121,6 +139,8 @@ mod tests {
             ring_max_bytes: 20,
             time_mode: TimeMode::DeltaPrevious,
             auto_scroll: false,
+            validate_ip_checksums: true,
+            validate_transport_checksums: true,
             colouring: false,
             colour_rules: colour_rules::defaults(),
         };
@@ -138,6 +158,10 @@ mod tests {
         assert_eq!(back.time_mode, TimeMode::SinceStart);
         assert!(back.colouring);
         assert_eq!(back.colour_rules, colour_rules::defaults());
+        assert!(
+            !back.validate_ip_checksums && !back.validate_transport_checksums,
+            "checksum validation ships off, as Wireshark does"
+        );
     }
 
     #[test]

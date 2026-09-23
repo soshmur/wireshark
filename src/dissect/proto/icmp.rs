@@ -6,7 +6,7 @@ use crate::dissect::cursor::{Cursor, Result};
 use crate::dissect::node::Value;
 use crate::dissect::registry::{enum_name, ICMP_TYPES};
 
-use super::{inet_checksum, CK_BAD, CK_GOOD};
+use super::{inet_checksum, CK_BAD, CK_GOOD, CK_UNVERIFIED};
 
 pub fn dissect(data: &[u8], ctx: &mut Ctx) -> Result<()> {
     let mut c = Cursor::new(data, ctx.base, ctx.source);
@@ -25,7 +25,9 @@ pub fn dissect(data: &[u8], ctx: &mut Ctx) -> Result<()> {
         checksum_r.clone(),
         Value::Unsigned(u64::from(checksum)),
     );
-    let status = if inet_checksum(&[data]) == 0 {
+    let status = if !ctx.options().validate_ip_checksums {
+        CK_UNVERIFIED
+    } else if inet_checksum(&[data]) == 0 {
         CK_GOOD
     } else {
         CK_BAD

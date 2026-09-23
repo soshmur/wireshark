@@ -87,10 +87,14 @@ pub fn dissect(data: &[u8], ctx: &mut Ctx) -> Result<()> {
         checksum_r.clone(),
         Value::Unsigned(u64::from(checksum)),
     );
-    let status = match transport_checksum(ctx, 6, data) {
-        Some(0) => CK_GOOD,
-        Some(_) => CK_BAD,
-        None => CK_UNVERIFIED,
+    let status = if !ctx.options().validate_transport_checksums {
+        CK_UNVERIFIED
+    } else {
+        match transport_checksum(ctx, 6, data) {
+            Some(0) => CK_GOOD,
+            Some(_) => CK_BAD,
+            None => CK_UNVERIFIED,
+        }
     };
     ctx.leaf("tcp.checksum.status", checksum_r, Value::Unsigned(status));
     ctx.leaf("tcp.urgent_pointer", urg_r, Value::Unsigned(u64::from(urg)));

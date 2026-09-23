@@ -479,7 +479,10 @@ mod colour_rules {
                 None => "-",
             })
             .collect();
-        assert_eq!(got, want, "colour rules claimed the wrong frames in {fixture}");
+        assert_eq!(
+            got, want,
+            "colour rules claimed the wrong frames in {fixture}"
+        );
     }
 
     #[test]
@@ -586,7 +589,10 @@ mod colour_rules {
     fn a_disabled_rule_hands_the_frame_to_the_next_one() {
         let mut rules = Rules::new(defaults());
         let frames = load("dns");
-        assert_eq!(rules.rules()[rules.matching(&frames[1]).expect("rule")].name, "DNS");
+        assert_eq!(
+            rules.rules()[rules.matching(&frames[1]).expect("rule")].name,
+            "DNS"
+        );
         let dns = rules.matching(&frames[1]).expect("rule");
         rules.rules_mut()[dns].enabled = false;
         rules.recompile();

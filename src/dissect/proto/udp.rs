@@ -33,6 +33,8 @@ pub fn dissect(data: &[u8], ctx: &mut Ctx) -> Result<()> {
     );
     let status = if checksum == 0 {
         CK_NOT_PRESENT
+    } else if !ctx.options().validate_transport_checksums {
+        CK_UNVERIFIED
     } else if data.len() < usize::from(len) {
         // Truncated (snaplen or an ICMP-quoted header): cannot be verified.
         CK_UNVERIFIED

@@ -484,3 +484,45 @@ Reported honestly: the 538-559k figure quoted at the end of Phase 2 is a
 burst number. Sustained over repeated runs on a warm machine this laptop
 gives roughly 460-540k for that build. The target in the brief is 500k
 frames/s/core, and on the current build the same measurement gives 541-577k.
+
+### Checksum validation ships off, and changing it dissects again
+
+Running the filter engine against live Wi-Fi showed the default "Bad
+checksum" colour rule claiming 20-47% of every capture. The breakdown was
+consistent across runs: zero bad IPv4 header checksums, but 62-89 bad TCP and
+30-75 bad UDP. That is checksum offload. The NIC computes the transport
+checksums, which cover a pseudo-header, after libpcap has already seen the
+packet; the IPv4 header checksum is done in software and is therefore right.
+The rule was working correctly and the packets were fine.
+
+Four options were on the table and the choice was made explicitly: netscope
+now has two preferences, "Validate IPv4 header and ICMPv4 checksums" and
+"Validate TCP, UDP and ICMPv6 checksums", both **off by default**, as
+Wireshark ships. With them off the status reports `Unverified` rather than a
+verdict, which is the honest answer: we did not check.
+
+This does not undo the Phase 2 decision that checksums are never used to
+reject a packet. Dissection is unchanged either way — `Options` alters what a
+dissector *reports*, never what it parses, and a test asserts exactly that
+over every fixture frame: same node count, same abbrevs, same ranges, same
+sources, same depths, with only the status values differing.
+
+The library default is the opposite of the application default. `dissect()`
+verifies; `netscope` passes `Options::no_checksums()`. A caller who has not
+thought about offload is better served by being told a packet looks wrong
+than by silence, and it keeps every fixture and snapshot exercising the
+verification code.
+
+**Changing the setting re-dissects what is already stored.** Filtering never
+re-dissects, but a dissection preference is the case that must: the stored
+trees are what the detail pane, the filter engine and the colour rules all
+read, so leaving them would display verdicts the settings say were never
+made. It costs one pass at dissection speed, about two seconds per million
+frames, and is only reachable while not capturing.
+
+That needed `Store::replace`. The obvious `clear` then `append` is wrong:
+`clear` resets the numbering to 1 and `append` renumbers to match, so a store
+that had evicted its first chunks would come back numbered from 1 claiming
+nothing had ever been evicted. `replace` keeps the numbering, the start
+timestamp and the eviction counters, and a test drives it through an actual
+eviction rather than trusting the reasoning.

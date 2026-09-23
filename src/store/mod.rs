@@ -185,6 +185,48 @@ impl Store {
         }
     }
 
+    /// Replace the held frames with `frames`, keeping the numbering and the
+    /// eviction record.
+    ///
+    /// This is for dissecting what is already held a second time, under
+    /// different settings. `clear` followed by `append` would not do: `clear`
+    /// resets the numbering to 1 and `append` renumbers to match, so a store
+    /// that had evicted its first 5,000 frames would come back numbered from
+    /// 1 and claim nothing had ever been evicted.
+    ///
+    /// `frames` must be the frames currently held, in order, which is what
+    /// iterating a snapshot gives. Their numbers are preserved as they are.
+    pub fn replace(&self, frames: Vec<Arc<Frame>>) {
+        let Ok(mut inner) = self.inner.lock() else {
+            return;
+        };
+        let first_number = inner.first_number;
+        let next_number = inner.next_number;
+        let start_ts = inner.start_ts;
+        let evicted_frames = inner.evicted_frames;
+        let evicted_bytes = inner.evicted_bytes;
+
+        inner.sealed = Arc::new(Vec::new());
+        inner.open = Vec::new();
+        inner.open_bytes = 0;
+        inner.bytes = 0;
+        for frame in frames {
+            let size = frame.approx_size() as u64;
+            inner.open_bytes += size;
+            inner.bytes += size;
+            inner.open.push(frame);
+            if inner.open.len() >= CHUNK {
+                Self::seal(&mut inner);
+            }
+        }
+        inner.first_number = first_number;
+        inner.next_number = next_number;
+        inner.start_ts = start_ts;
+        inner.evicted_frames = evicted_frames;
+        inner.evicted_bytes = evicted_bytes;
+        self.version.fetch_add(1, Ordering::Release);
+    }
+
     pub fn stats(&self) -> StoreStats {
         let Ok(inner) = self.inner.lock() else {
             return StoreStats::default();
@@ -371,5 +413,37 @@ mod tests {
         let s = store.snapshot();
         assert_eq!(s.get(0).map(|f| f.number), Some(1));
         assert_eq!(s.get(1).map(|f| f.number), Some(2));
+    }
+
+    #[test]
+    fn replace_keeps_numbering_and_the_eviction_record() {
+        // Re-dissecting what is held must not renumber it. A store that has
+        // evicted its first chunk starts at a number well above 1, and
+        // clear+append would quietly reset that to 1.
+        let store = Store::new(Limits {
+            max_frames: CHUNK as u64,
+            max_bytes: u64::MAX,
+        });
+        let batch: Vec<Arc<Frame>> = (1..=(CHUNK as u32 * 2)).map(|n| frame(n, 64)).collect();
+        store.append(batch);
+        let before = store.stats();
+        assert!(before.evicted_frames > 0, "the test needs an eviction");
+        let snap = store.snapshot();
+        let first = snap.get(0).map(|f| f.number).expect("a frame");
+        assert!(first > 1, "eviction should have moved the first number");
+
+        let frames: Vec<Arc<Frame>> = snap.iter().cloned().collect();
+        let version = store.version();
+        store.replace(frames);
+        assert!(store.version() > version, "readers must see a new version");
+
+        let after = store.stats();
+        assert_eq!(after.frames, before.frames);
+        assert_eq!(after.next_number, before.next_number);
+        assert_eq!(after.evicted_frames, before.evicted_frames);
+        assert_eq!(after.evicted_bytes, before.evicted_bytes);
+        let snap = store.snapshot();
+        assert_eq!(snap.get(0).map(|f| f.number), Some(first));
+        assert_eq!(snap.row_of(first), Some(0));
     }
 }

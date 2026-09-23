@@ -3,7 +3,11 @@
 //! this is the only check that the filter engine meets traffic it did not
 //! have a hand in shaping.
 //!
-//!     cargo run --release --example live_filter -- "Wi-Fi" 20
+//!     cargo run --release --example live_filter -- "Wi-Fi" 20 [verify]
+//!
+//! Dissects with the settings the application ships - checksum validation
+//! off - unless a third argument `verify` is given, which turns it on and
+//! shows the checksum-offload effect that made off the default.
 
 #![forbid(unsafe_code)]
 
@@ -49,6 +53,12 @@ fn main() {
     let mut args = std::env::args().skip(1);
     let device = args.next().unwrap_or_else(|| "Wi-Fi".to_string());
     let secs: u64 = args.next().and_then(|s| s.parse().ok()).unwrap_or(20);
+    let verify = args.next().is_some_and(|a| a == "verify");
+    let options = if verify {
+        netscope::dissect::Options::default()
+    } else {
+        netscope::dissect::Options::no_checksums()
+    };
 
     // The argument is matched against the friendly name as well as the
     // device name, so "Wi-Fi" works the way it does everywhere else.
@@ -77,7 +87,7 @@ fn main() {
             return;
         }
     };
-    let mut worker = Worker::spawn(rx, std::sync::Arc::clone(&store), cap.link_type());
+    let mut worker = Worker::spawn(rx, std::sync::Arc::clone(&store), cap.link_type(), options);
     let deadline = Instant::now() + Duration::from_secs(secs);
     while Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(200));
@@ -89,7 +99,10 @@ fn main() {
 
     let snapshot = store.snapshot();
     let total = snapshot.len();
-    println!("{total} frames captured on {device}\n");
+    println!(
+        "{total} frames captured on {device} (checksum validation {})\n",
+        if verify { "on" } else { "off, as shipped" }
+    );
     if total == 0 {
         println!("no traffic; nothing to check");
         return;

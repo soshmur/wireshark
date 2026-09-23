@@ -36,7 +36,12 @@ fn main() {
         std::process::exit(1);
     };
     let store = Store::new(Limits::default());
-    let mut worker = Worker::spawn(rx, std::sync::Arc::clone(&store), cap.link_type());
+    let mut worker = Worker::spawn(
+        rx,
+        std::sync::Arc::clone(&store),
+        cap.link_type(),
+        netscope::dissect::Options::default(),
+    );
     let deadline = Instant::now() + Duration::from_secs(secs);
     while Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(200));

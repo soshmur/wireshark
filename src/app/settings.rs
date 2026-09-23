@@ -1,4 +1,5 @@
-//! Capture options dialog: snaplen, promiscuous mode, ring buffer limits.
+//! Capture options dialog: snaplen, promiscuous mode, ring buffer limits and
+//! checksum validation.
 
 use crate::config::Config;
 
@@ -61,6 +62,34 @@ pub fn show(ctx: &egui::Context, open: &mut bool, config: &mut Config, capturing
                     ui.end_row();
                 });
             ui.weak("Limits apply immediately and are honoured to within one 4,096-frame chunk.");
+            ui.separator();
+            ui.add_enabled_ui(!capturing, |ui| {
+                ui.label("Checksum validation:");
+                changed |= ui
+                    .checkbox(
+                        &mut config.validate_ip_checksums,
+                        "Validate IPv4 header and ICMPv4 checksums",
+                    )
+                    .on_hover_text(
+                        "These are computed in software, so a bad one usually means \n                         the packet really is damaged.",
+                    )
+                    .changed();
+                changed |= ui
+                    .checkbox(
+                        &mut config.validate_transport_checksums,
+                        "Validate TCP, UDP and ICMPv6 checksums",
+                    )
+                    .on_hover_text(
+                        "Off by default, as Wireshark ships. Your network card computes \n                         these after libpcap has already seen the packet, so frames your \n                         own machine sent will look wrong - typically 20-40% of a \n                         capture. This is called checksum offload and is normal.",
+                    )
+                    .changed();
+                ui.weak(
+                    "Changing these dissects the frames already captured again, \n                     which takes about two seconds per million.",
+                );
+                if capturing {
+                    ui.weak("Stop the capture to change these.");
+                }
+            });
         });
     changed
 }
