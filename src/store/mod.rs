@@ -5,6 +5,10 @@
 //! (small) open chunk, and indexing is O(1). Eviction removes whole chunks from
 //! the front, so the configured limits are honoured to within one chunk.
 
+pub mod view;
+
+pub use view::View;
+
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 

@@ -3,6 +3,7 @@
 
 mod detail_tree;
 mod device_panel;
+mod filter_bar;
 mod first_run;
 mod hex_pane;
 mod packet_list;
@@ -16,7 +17,7 @@ use crate::capture::{self, Capture, CaptureConfig, Device, Preflight, StatsSnaps
 use crate::config::{Config, TimeMode};
 use crate::dissect::worker::Worker;
 use crate::dissect::Frame;
-use crate::store::{Limits, Snapshot, Store, StoreStats};
+use crate::store::{Limits, Store, StoreStats, View};
 use detail_tree::TreeState;
 use hex_pane::HexState;
 use packet_list::{ListState, Nav};
@@ -101,7 +102,10 @@ pub struct NetscopeApp {
     rate: RateMeter,
     last_stats: StatsSnapshot,
     store: Arc<Store>,
-    snapshot: Snapshot,
+    /// The rows the packet list shows: every frame, or those a display
+    /// filter selects.
+    view: View,
+    filter: filter_bar::FilterBar,
     store_stats: StoreStats,
     list: ListState,
     tree: TreeState,
@@ -139,7 +143,8 @@ impl NetscopeApp {
             capture_error: None,
             rate: RateMeter::new(),
             last_stats: StatsSnapshot::default(),
-            snapshot: store.snapshot(),
+            view: View::all(store.snapshot()),
+            filter: filter_bar::FilterBar::default(),
             store_stats: StoreStats::default(),
             store,
             show_devices: true,
@@ -269,25 +274,38 @@ impl NetscopeApp {
         });
     }
 
-    fn refresh_snapshot(&mut self) {
-        if self.store.version() != self.snapshot.version() {
-            self.snapshot = self.store.snapshot();
+    fn refresh_view(&mut self) {
+        if self.store.version() != self.view.version() {
+            self.rebuild_view();
             self.store_stats = self.store.stats();
         }
+    }
+
+    /// Rebuild the displayed rows from the store and the applied filter.
+    fn rebuild_view(&mut self) {
+        self.view = View::build(self.store.snapshot(), self.filter.applied.as_ref());
     }
 
     /// The frame currently selected in the list, if still held.
     fn selected_frame(&self) -> Option<Arc<Frame>> {
         self.list
             .selected
-            .and_then(|n| self.snapshot.row_of(n))
-            .and_then(|r| self.snapshot.get(r))
+            .and_then(|n| self.view.row_of(n))
+            .and_then(|r| self.view.get(r))
             .cloned()
     }
 
     fn handle_keys(&mut self, ctx: &egui::Context) {
-        // Keys go to the panes only when no text field owns the keyboard.
-        if ctx.memory(|m| m.focused().is_some()) || self.show_first_run {
+        if self.show_first_run {
+            return;
+        }
+        // Ctrl+K focuses the filter bar from anywhere.
+        if ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::K)) {
+            self.filter.request_focus();
+            return;
+        }
+        // The rest go to the panes only when no text field owns the keyboard.
+        if ctx.memory(|m| m.focused().is_some()) {
             return;
         }
         let page = 20;
@@ -338,7 +356,7 @@ impl NetscopeApp {
                     None
                 };
                 if let Some(nav) = nav {
-                    self.list.navigate(nav, &self.snapshot);
+                    self.list.navigate(nav, &self.view);
                 }
             }
         }
@@ -501,7 +519,15 @@ impl NetscopeApp {
             }
             ui.separator();
             let st = &self.store_stats;
-            ui.label(format!("Frames: {}", st.frames));
+            if self.view.is_filtered() {
+                ui.label(format!(
+                    "Displayed: {} of {}",
+                    self.view.len(),
+                    self.view.total()
+                ));
+            } else {
+                ui.label(format!("Frames: {}", st.frames));
+            }
             if st.evicted_frames > 0 {
                 ui.label(format!("Evicted: {}", st.evicted_frames));
             }
@@ -592,7 +618,7 @@ impl eframe::App for NetscopeApp {
             }
             ctx.request_repaint_after(REPAINT_INTERVAL);
         }
-        self.refresh_snapshot();
+        self.refresh_view();
         self.handle_keys(ctx);
 
         egui::TopBottomPanel::top("menu").show(ctx, |ui| {
@@ -606,6 +632,21 @@ impl eframe::App for NetscopeApp {
                 }
                 ui.add_space(4.0);
                 self.toolbar(ui);
+                ui.add_space(4.0);
+                if self.filter.show(ui) == filter_bar::Action::FilterChanged {
+                    self.rebuild_view();
+                    // Keep the selection if it is still displayed, else move
+                    // to the nearest frame after it.
+                    if let Some(n) = self.list.selected {
+                        if self.view.row_of(n).is_none() {
+                            self.list.selected = self
+                                .view
+                                .row_at_or_after(n)
+                                .and_then(|r| self.view.get(r))
+                                .map(|f| f.number);
+                        }
+                    }
+                }
                 ui.add_space(4.0);
             });
         });
@@ -641,7 +682,7 @@ impl eframe::App for NetscopeApp {
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.add_enabled_ui(!self.show_first_run, |ui| {
                 let before = self.list.selected;
-                packet_list::show(ui, &self.snapshot, self.config.time_mode, &mut self.list);
+                packet_list::show(ui, &self.view, self.config.time_mode, &mut self.list);
                 if self.list.selected != before {
                     self.focus = Focus::List;
                 }

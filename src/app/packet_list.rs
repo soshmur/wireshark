@@ -5,7 +5,7 @@ use egui_extras::{Column, TableBuilder};
 
 use super::timefmt;
 use crate::config::TimeMode;
-use crate::store::Snapshot;
+use crate::store::View;
 
 pub const ROW_HEIGHT: f32 = 18.0;
 
@@ -31,12 +31,12 @@ pub enum Nav {
 
 impl ListState {
     /// Apply a navigation step. `page` is the number of visible rows.
-    pub fn navigate(&mut self, nav: Nav, snapshot: &Snapshot) {
-        if snapshot.is_empty() {
+    pub fn navigate(&mut self, nav: Nav, view: &View) {
+        if view.is_empty() {
             return;
         }
-        let last = snapshot.len() - 1;
-        let current = self.selected.and_then(|n| snapshot.row_of(n));
+        let last = view.len() - 1;
+        let current = self.selected.and_then(|n| view.row_of(n));
         let target = match (nav, current) {
             (Nav::Home, _) => 0,
             (Nav::End, _) => last,
@@ -46,13 +46,13 @@ impl ListState {
             (Nav::Down(_), None) => 0,
         };
         self.follow = false;
-        self.selected = snapshot.get(target).map(|f| f.number);
+        self.selected = view.get(target).map(|f| f.number);
         self.scroll_to = Some((target, egui::Align::Center));
     }
 }
 
-pub fn show(ui: &mut egui::Ui, snapshot: &Snapshot, mode: TimeMode, state: &mut ListState) {
-    let n = snapshot.len();
+pub fn show(ui: &mut egui::Ui, view: &View, mode: TimeMode, state: &mut ListState) {
+    let n = view.len();
     if state.follow && n > 0 {
         state.scroll_to = Some((n - 1, egui::Align::BOTTOM));
     }
@@ -72,7 +72,7 @@ pub fn show(ui: &mut egui::Ui, snapshot: &Snapshot, mode: TimeMode, state: &mut 
     if let Some((row, align)) = state.scroll_to.take() {
         table = table.scroll_to_row(row, Some(align));
     }
-    let start = snapshot.start_ts();
+    let start = view.snapshot().start_ts();
     table
         .header(20.0, |mut header| {
             for title in [
@@ -92,12 +92,12 @@ pub fn show(ui: &mut egui::Ui, snapshot: &Snapshot, mode: TimeMode, state: &mut 
         .body(|body| {
             body.rows(ROW_HEIGHT, n, |mut row| {
                 let i = row.index();
-                let Some(frame) = snapshot.get(i) else {
+                let Some(frame) = view.get(i) else {
                     return;
                 };
                 row.set_selected(state.selected == Some(frame.number));
                 let previous = if i > 0 {
-                    snapshot.get(i - 1).map(|f| f.ts)
+                    view.get(i - 1).map(|f| f.ts)
                 } else {
                     None
                 };
