@@ -303,3 +303,29 @@ no dissector can object to, because each field is individually well-formed.
 The general lesson is that a new way of *reading* the fixtures is also a new
 way of checking them, and is worth running over the whole corpus once as soon
 as it works.
+
+### Find moves the selection; it does not change what is displayed
+
+Ctrl+F searches the *displayed* rows, not the store. A find that would hit a
+frame the current display filter hides simply does not hit. The alternative —
+having find search the whole capture and silently widen the filter to reveal
+its answer — would make two independent controls fight over one list, and
+leave the user unsure which of the two produced what they are looking at.
+
+Find takes three kinds of needle, each reusing machinery that already exists:
+a display filter (the Phase 3 compiler and evaluator, unchanged), a string,
+or a hex byte sequence. String and hex searches take an explicit scope —
+packet list, packet details, or packet bytes — because the three differ by
+orders of magnitude in cost. Searching details formats every node label of
+every frame scanned; making that an explicit choice is more honest than
+silently searching everything and being slow.
+
+A string searched in packet bytes is matched as its own bytes. Packet
+payloads are not text, and transcoding a needle into some guessed encoding
+before comparing would produce matches the user cannot account for.
+
+The search wraps, so repeating it cycles through every hit and always finds
+one if one exists. The backward walk is biased by the row count rather than
+subtracting towards zero, because the obvious `r - 1` underflows at row zero —
+the same class of bug fuzzing found in the dissectors, and the reason the
+wrap-around cases are pinned by tests rather than reasoned about once.

@@ -5,6 +5,7 @@ pub mod colour_rules;
 mod detail_tree;
 mod device_panel;
 mod filter_bar;
+pub mod find;
 mod first_run;
 mod hex_pane;
 mod packet_list;
@@ -109,6 +110,7 @@ pub struct NetscopeApp {
     filter: filter_bar::FilterBar,
     /// Compiled colour rules, applied per displayed row.
     colours: colour_rules::Rules,
+    find: find::FindBar,
     store_stats: StoreStats,
     list: ListState,
     tree: TreeState,
@@ -151,6 +153,7 @@ impl NetscopeApp {
             view: View::all(store.snapshot()),
             filter: filter_bar::FilterBar::default(),
             colours,
+            find: find::FindBar::default(),
             store_stats: StoreStats::default(),
             store,
             show_devices: true,
@@ -302,13 +305,45 @@ impl NetscopeApp {
             .cloned()
     }
 
+    /// Move the selection to the next row satisfying the find query.
+    fn run_find(&mut self, direction: find::Direction) {
+        let Ok(query) = self.find.compiled() else {
+            return;
+        };
+        let from = self.list.selected.and_then(|n| self.view.row_of(n));
+        match find::search(&self.view, from, direction, &query) {
+            Some(row) => {
+                self.list.follow = false;
+                self.list.selected = self.view.get(row).map(|f| f.number);
+                self.list.scroll_to = Some((row, egui::Align::Center));
+                self.focus = Focus::List;
+                self.find.report(true);
+            }
+            None => self.find.report(false),
+        }
+    }
+
     fn handle_keys(&mut self, ctx: &egui::Context) {
         if self.show_first_run {
             return;
         }
-        // Ctrl+K focuses the filter bar from anywhere.
+        // Ctrl+K focuses the filter bar from anywhere, Ctrl+F the find bar.
         if ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::K)) {
             self.filter.request_focus();
+            return;
+        }
+        if ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::F)) {
+            self.find.open();
+            return;
+        }
+        // F3 repeats the last find without returning to the bar.
+        if self.find.open && ctx.input(|i| i.key_pressed(egui::Key::F3)) {
+            let backward = ctx.input(|i| i.modifiers.shift);
+            self.run_find(if backward {
+                find::Direction::Backward
+            } else {
+                find::Direction::Forward
+            });
             return;
         }
         // The rest go to the panes only when no text field owns the keyboard.
@@ -374,6 +409,26 @@ impl NetscopeApp {
             ui.menu_button("File", |ui| {
                 if ui.button("Quit").clicked() {
                     ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+            });
+            ui.menu_button("Edit", |ui| {
+                if ui.button("Find packet…	Ctrl+F").clicked() {
+                    self.find.open();
+                    ui.close_menu();
+                }
+                if ui
+                    .add_enabled(self.find.open, egui::Button::new("Find next	F3"))
+                    .clicked()
+                {
+                    self.run_find(find::Direction::Forward);
+                    ui.close_menu();
+                }
+                if ui
+                    .add_enabled(self.find.open, egui::Button::new("Find previous	Shift+F3"))
+                    .clicked()
+                {
+                    self.run_find(find::Direction::Backward);
+                    ui.close_menu();
                 }
             });
             ui.menu_button("View", |ui| {
@@ -638,6 +693,7 @@ impl eframe::App for NetscopeApp {
         }
         self.refresh_view();
         self.handle_keys(ctx);
+        let mut find_request = None;
 
         egui::TopBottomPanel::top("menu").show(ctx, |ui| {
             ui.add_enabled_ui(!self.show_first_run, |ui| self.menu_bar(ui));
@@ -665,9 +721,20 @@ impl eframe::App for NetscopeApp {
                         }
                     }
                 }
+                if self.find.open {
+                    ui.add_space(4.0);
+                    match self.find.show(ui) {
+                        find::Action::Find(d) => find_request = Some(d),
+                        find::Action::Close => self.find.close(),
+                        find::Action::None => {}
+                    }
+                }
                 ui.add_space(4.0);
             });
         });
+        if let Some(d) = find_request {
+            self.run_find(d);
+        }
         egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
             self.status_bar(ui);
         });
