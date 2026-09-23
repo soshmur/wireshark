@@ -125,3 +125,17 @@ path = "fuzz_targets/pcapng.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "filter"
+path = "fuzz_targets/filter.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "filter_eval"
+path = "fuzz_targets/filter_eval.rs"
+test = false
+doc = false
+bench = false

@@ -1262,6 +1262,7 @@ dependencies = [
  "egui",
  "egui_extras",
  "netscope-ffi",
+ "regex",
  "serde",
  "toml",
 ]
