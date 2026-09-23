@@ -407,3 +407,46 @@ one if one exists. The backward walk is biased by the row count rather than
 subtracting towards zero, because the obvious `r - 1` underflows at row zero —
 the same class of bug fuzzing found in the dissectors, and the reason the
 wrap-around cases are pinned by tests rather than reasoned about once.
+
+### Fuzzing the filter language found two crashes the tests did not
+
+Two targets were added for Phase 3: `filter`, which compiles arbitrary text
+and asserts the reported error column stays inside the input, and
+`filter_eval`, which runs a compiled filter over an arbitrary frame. Both
+crashed within seconds.
+
+**Non-ASCII text panicked the completer.** `word_at` walked back to the start
+of the word under the caret with `rfind(...).map_or(0, |i| i + 1)`. For an
+ASCII separator that is the next character; for a multi-byte one such as `é`
+it is a byte *inside* the separator, and slicing there panics. Typing an
+accented character into the filter bar would have taken the whole UI down.
+Both ends of the slice are now kept on character boundaries: the caret is
+clamped down to one, and the word start steps back by the separator's own
+`len_utf8`.
+
+**Deep nesting overflowed the stack.** `!!!!…tcp` and `((((…tcp…))))` recurse
+once per level in the parser, and the resulting tree is then walked
+recursively by the type checker, the evaluator and `Drop`. Nesting is now
+capped at 64 levels and refused as an ordinary `FilterError` with a column,
+which is what a user pasting something strange should get.
+
+The cap alone was not enough, because `a || b || c || …` built a *left-leaning
+chain* whose depth grows with the operand count while the parser's own
+recursion stays flat — so a long chain could still overflow the later walks.
+`And` and `Or` now hold `Vec<Expr>` rather than two boxed operands: a chain of
+the same operator is one flat node, nesting depth reflects only genuine
+nesting, and the evaluator becomes `all`/`any` over a slice. A 500-operand
+chain now parses and evaluates without recursing at all.
+
+This is the second time a class of bug has been found by fuzzing that the
+expectation suite could not have reached: 173 hand-written filter expectations
+all use sensible filters, because a person writing expectations writes filters
+they can predict the answer to.
+
+| Target | Runs (120s) | Edges | Result |
+|---|---|---|---|
+| `filter` | 150,013 | 1,104 | no crash |
+| `filter_eval` | 1,468,860 | 1,146 | no crash |
+
+Before the fixes both targets died in seconds, at 571 and 829 edges; the
+coverage roughly doubled once they could run to completion.

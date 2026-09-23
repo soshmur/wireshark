@@ -16,6 +16,7 @@ pub fn parse(input: &str) -> Result<Expr> {
         tokens: &tokens,
         pos: 0,
         end: input.len(),
+        depth: 0,
     };
     let expr = p.or_expr()?;
     if let Some(t) = p.peek_spanned() {
@@ -30,11 +31,19 @@ pub fn parse(input: &str) -> Result<Expr> {
     Ok(expr)
 }
 
+/// How deeply `!` and parentheses may nest. Every level is a stack frame in
+/// the parser and again in whatever later walks the tree, so it is capped
+/// and reported as an ordinary error rather than left to overflow the stack.
+/// Real filters do not come close; the fuzzer reached it immediately.
+const MAX_DEPTH: u32 = 64;
+
 struct Parser<'a> {
     tokens: &'a [Spanned],
     pos: usize,
     /// Offset just past the input, for errors that point at "the end".
     end: usize,
+    /// Current nesting of `!` and parentheses.
+    depth: u32,
 }
 
 impl<'a> Parser<'a> {
@@ -87,28 +96,52 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn or_expr(&mut self) -> Result<Expr> {
-        let mut lhs = self.and_expr()?;
-        while self.eat(&Tok::Or) {
-            let rhs = self.and_expr()?;
-            lhs = Expr::Or(Box::new(lhs), Box::new(rhs));
+    /// Enter one level of nesting, or refuse. `span` is blamed in the error.
+    fn descend(&mut self, span: std::ops::Range<usize>) -> Result<()> {
+        self.depth += 1;
+        if self.depth > MAX_DEPTH {
+            return Err(FilterError::new(
+                format!("the filter nests more than {MAX_DEPTH} levels deep"),
+                span,
+            ));
         }
-        Ok(lhs)
+        Ok(())
+    }
+
+    fn or_expr(&mut self) -> Result<Expr> {
+        let first = self.and_expr()?;
+        if self.peek() != Some(&Tok::Or) {
+            return Ok(first);
+        }
+        let mut parts = vec![first];
+        while self.eat(&Tok::Or) {
+            parts.push(self.and_expr()?);
+        }
+        Ok(Expr::Or(parts))
     }
 
     fn and_expr(&mut self) -> Result<Expr> {
-        let mut lhs = self.unary()?;
-        while self.eat(&Tok::And) {
-            let rhs = self.unary()?;
-            lhs = Expr::And(Box::new(lhs), Box::new(rhs));
+        let first = self.unary()?;
+        if self.peek() != Some(&Tok::And) {
+            return Ok(first);
         }
-        Ok(lhs)
+        let mut parts = vec![first];
+        while self.eat(&Tok::And) {
+            parts.push(self.unary()?);
+        }
+        Ok(Expr::And(parts))
     }
 
     fn unary(&mut self) -> Result<Expr> {
-        if self.eat(&Tok::Not) {
-            let inner = self.unary()?;
-            return Ok(Expr::Not(Box::new(inner)));
+        if let Some(s) = self.peek_spanned() {
+            if s.tok == Tok::Not {
+                let span = s.span.clone();
+                self.pos += 1;
+                self.descend(span)?;
+                let inner = self.unary()?;
+                self.depth -= 1;
+                return Ok(Expr::Not(Box::new(inner)));
+            }
         }
         self.primary()
     }
@@ -121,9 +154,12 @@ impl<'a> Parser<'a> {
             ));
         };
         if s.tok == Tok::LParen {
+            let span = s.span.clone();
             self.pos += 1;
+            self.descend(span)?;
             let inner = self.or_expr()?;
             self.expect(&Tok::RParen, "`)` to close the group")?;
+            self.depth -= 1;
             return Ok(inner);
         }
         let Tok::Field(name) = &s.tok else {
@@ -303,19 +339,21 @@ mod tests {
     fn precedence_is_or_then_and_then_not() {
         // a || b && c parses as a || (b && c)
         let e = parse("arp || tcp && udp").expect("parse");
-        match e {
-            Expr::Or(l, r) => {
-                assert_eq!(field(&l).name, "arp");
-                assert!(matches!(*r, Expr::And(..)));
+        match &e {
+            Expr::Or(parts) => {
+                assert_eq!(parts.len(), 2);
+                assert_eq!(field(&parts[0]).name, "arp");
+                assert!(matches!(parts[1], Expr::And(..)));
             }
             other => panic!("{other:?}"),
         }
         // !a && b parses as (!a) && b
         let e = parse("!arp && tcp").expect("parse");
-        match e {
-            Expr::And(l, r) => {
-                assert!(matches!(*l, Expr::Not(_)));
-                assert_eq!(field(&r).name, "tcp");
+        match &e {
+            Expr::And(parts) => {
+                assert_eq!(parts.len(), 2);
+                assert!(matches!(parts[0], Expr::Not(_)));
+                assert_eq!(field(&parts[1]).name, "tcp");
             }
             other => panic!("{other:?}"),
         }
@@ -328,11 +366,67 @@ mod tests {
     }
 
     #[test]
+    fn a_chain_of_the_same_operator_is_one_flat_node() {
+        // Not a left-leaning tree: the depth of `a || b || ... ` must not
+        // grow with the number of operands, because every walk of the tree
+        // is recursive.
+        match parse("arp || tcp || udp || dns || icmp").expect("parse") {
+            Expr::Or(parts) => assert_eq!(parts.len(), 5),
+            other => panic!("{other:?}"),
+        }
+        match parse("arp && tcp && udp").expect("parse") {
+            Expr::And(parts) => assert_eq!(parts.len(), 3),
+            other => panic!("{other:?}"),
+        }
+        // Mixed operators still nest, at one level per precedence change.
+        match parse("a.b || c.d && e.f || g.h").expect("parse") {
+            Expr::Or(parts) => {
+                assert_eq!(parts.len(), 3);
+                assert!(matches!(parts[1], Expr::And(..)));
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn nesting_is_capped_rather_than_overflowing_the_stack() {
+        // The fuzzer reached this in seconds with `!!!!...` and `((((...`.
+        let deep_not = "!".repeat(MAX_DEPTH as usize + 1) + "tcp";
+        let e = parse(&deep_not).expect_err("should be refused");
+        assert!(e.message.contains("nests more than"), "{}", e.message);
+        assert!(e.column < deep_not.len());
+
+        let depth = MAX_DEPTH as usize + 1;
+        let deep_paren = "(".repeat(depth) + "tcp" + &")".repeat(depth);
+        let e = parse(&deep_paren).expect_err("should be refused");
+        assert!(e.message.contains("nests more than"), "{}", e.message);
+
+        // Just inside the cap still parses, so the limit is not off by one
+        // in the direction that rejects real filters.
+        let ok = "!".repeat(MAX_DEPTH as usize) + "tcp";
+        assert!(parse(&ok).is_ok());
+
+        // Nesting is depth, not count: a long flat chain is fine.
+        let long_chain = (0..500)
+            .map(|_| "tcp")
+            .collect::<Vec<_>>()
+            .join(" || ");
+        assert!(parse(&long_chain).is_ok());
+
+        // And parentheses closed before the next one opens do not accumulate.
+        let wide = (0..500)
+            .map(|_| "(tcp)")
+            .collect::<Vec<_>>()
+            .join(" || ");
+        assert!(parse(&wide).is_ok());
+    }
+
+    #[test]
     fn word_operators_are_accepted() {
-        assert!(matches!(parse("arp or tcp").expect("parse"), Expr::Or(..)));
+        assert!(matches!(parse("arp or tcp").expect("parse"), Expr::Or(_)));
         assert!(matches!(
             parse("arp and tcp").expect("parse"),
-            Expr::And(..)
+            Expr::And(_)
         ));
         assert!(matches!(parse("not arp").expect("parse"), Expr::Not(_)));
     }

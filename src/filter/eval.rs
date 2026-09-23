@@ -20,8 +20,8 @@ use super::types::{Operand, Target, Test};
 /// Does `frame` match?
 pub fn matches(test: &Test, frame: &Frame) -> bool {
     match test {
-        Test::And(a, b) => matches(a, frame) && matches(b, frame),
-        Test::Or(a, b) => matches(a, frame) || matches(b, frame),
+        Test::And(parts) => parts.iter().all(|t| matches(t, frame)),
+        Test::Or(parts) => parts.iter().any(|t| matches(t, frame)),
         Test::Not(a) => !matches(a, frame),
         Test::Present(target) => frame
             .tree

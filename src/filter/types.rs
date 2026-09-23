@@ -62,8 +62,10 @@ pub enum Test {
         target: Target,
         values: Vec<Operand>,
     },
-    And(Box<Test>, Box<Test>),
-    Or(Box<Test>, Box<Test>),
+    /// All of these hold; empty is vacuously true.
+    And(Vec<Test>),
+    /// Any of these holds.
+    Or(Vec<Test>),
     Not(Box<Test>),
 }
 
@@ -142,10 +144,18 @@ pub fn check(expr: &Expr) -> Result<Test> {
                 values: out,
             })
         }
-        Expr::And(a, b) => Ok(Test::And(Box::new(check(a)?), Box::new(check(b)?))),
-        Expr::Or(a, b) => Ok(Test::Or(Box::new(check(a)?), Box::new(check(b)?))),
+        Expr::And(parts) => Ok(Test::And(check_all(parts)?)),
+        Expr::Or(parts) => Ok(Test::Or(check_all(parts)?)),
         Expr::Not(a) => Ok(Test::Not(Box::new(check(a)?))),
     }
+}
+
+fn check_all(parts: &[Expr]) -> Result<Vec<Test>> {
+    let mut out = Vec::with_capacity(parts.len());
+    for p in parts {
+        out.push(check(p)?);
+    }
+    Ok(out)
 }
 
 /// Compile a filter from text in one step.

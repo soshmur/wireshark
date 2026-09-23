@@ -103,7 +103,12 @@ pub enum Expr {
         field: FieldRef,
         values: Vec<SpannedLiteral>,
     },
-    And(Box<Expr>, Box<Expr>),
-    Or(Box<Expr>, Box<Expr>),
+    /// All of these hold. `a && b && c` is one node with three operands,
+    /// not a chain of two-operand nodes: a chain's depth grows with the
+    /// number of operands, and everything that walks the tree - the type
+    /// checker, the evaluator, `Drop` - walks it recursively.
+    And(Vec<Expr>),
+    /// Any of these holds.
+    Or(Vec<Expr>),
     Not(Box<Expr>),
 }

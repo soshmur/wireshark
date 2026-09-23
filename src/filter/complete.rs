@@ -4,12 +4,22 @@
 use crate::dissect::registry::{self, FieldDef};
 
 /// Where the word being typed starts, and what it is so far.
+///
+/// Both ends are kept on character boundaries. The caret arrives from the
+/// text widget and is clamped down to one; the word start steps back over a
+/// separator by that character's own width, because adding one to the byte
+/// index of a multi-byte separator such as `\u{e9}` lands inside it and slicing
+/// there panics.
 pub fn word_at(text: &str, caret: usize) -> (usize, &str) {
-    let caret = caret.min(text.len());
-    let head = &text[..caret];
-    let start = head
-        .rfind(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '.'))
-        .map_or(0, |i| i + 1);
+    let mut caret = caret.min(text.len());
+    while caret > 0 && !text.is_char_boundary(caret) {
+        caret -= 1;
+    }
+    let start = text[..caret]
+        .char_indices()
+        .rev()
+        .find(|(_, c)| !(c.is_ascii_alphanumeric() || *c == '_' || *c == '.'))
+        .map_or(0, |(i, c)| i + c.len_utf8());
     (start, &text[start..caret])
 }
 
@@ -64,6 +74,29 @@ mod tests {
         assert_eq!(word_at("tcp.port == 443", 15), (12, "443"));
         assert_eq!(word_at("", 0), (0, ""));
         assert_eq!(word_at("(tcp", 4), (1, "tcp"));
+    }
+
+    #[test]
+    fn non_ascii_text_does_not_panic() {
+        // Fuzzing found this: the byte after a multi-byte separator is not a
+        // character boundary, and slicing there panicked the whole UI as
+        // soon as anyone typed an accented character into the filter bar.
+        assert_eq!(word_at("\u{e9}tcp", "\u{e9}tcp".len()), (2, "tcp"));
+        assert_eq!(word_at("ip\u{e9}tcp", "ip\u{e9}tcp".len()), (4, "tcp"));
+        // An emoji is four bytes; the word starts after all of them.
+        let text = "\u{1f600}tcp";
+        assert_eq!(word_at(text, text.len()), (4, "tcp"));
+        // A caret landing inside a character is clamped back, not panicked.
+        assert_eq!(word_at("tcp\u{e9}", 4), (0, "tcp"));
+        // Every caret position in a non-ASCII string is safe.
+        for text in ["\u{e9}", "a\u{e9}b", "\u{1f600}\u{1f600}", "ip.\u{e9}.addr"] {
+            for caret in 0..=text.len() {
+                let (start, word) = word_at(text, caret);
+                assert!(start <= text.len());
+                assert!(text.is_char_boundary(start), "{text:?} at {caret}");
+                assert!(text[start..].starts_with(word));
+            }
+        }
     }
 
     #[test]
