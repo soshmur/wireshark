@@ -7,6 +7,8 @@
 
 pub mod conversations;
 pub mod follow;
+pub mod hierarchy;
+pub mod io_graph;
 pub mod view;
 
 pub use conversations::{conversations, Row};
