@@ -1201,6 +1201,79 @@ fn tcp_analysis_fixture() -> Fixture {
     )
 }
 
+/// HTTP messages that do not fit in one segment.
+///
+/// This is the fixture desegmentation exists for: a response whose headers
+/// arrive in one segment and whose body arrives in two more, a chunked
+/// response split mid-chunk, and a pipelined pair that share a segment. Every
+/// dissector-level test before this one used messages that happened to be
+/// small enough to fit, which is not what a capture looks like.
+fn desegment_fixture() -> Fixture {
+    let mut flow = Flow::new(52000, 80, 1, 1);
+    let client = |flow: &mut Flow, payload: &[u8]| {
+        let t = flow.client(PSH | ACK, payload);
+        eth(
+            MAC_B,
+            MAC_A,
+            0x0800,
+            &ipv4(IP_A, IP_B, 6, &tcp4(IP_A, IP_B, &t, payload)),
+        )
+    };
+    let server = |flow: &mut Flow, payload: &[u8]| {
+        let t = flow.server(PSH | ACK, payload);
+        eth(
+            MAC_A,
+            MAC_B,
+            0x0800,
+            &ipv4(IP_B, IP_A, 6, &tcp4(IP_B, IP_A, &t, payload)),
+        )
+    };
+
+    let mut frames = Vec::new();
+
+    // 1: a request, whole.
+    frames.push(client(
+        &mut flow,
+        b"GET /split HTTP/1.1\r\nHost: example.com\r\n\r\n",
+    ));
+
+    // 2-4: a 30-byte response body split three ways. Frames 2 and 3 carry no
+    // complete message; frame 4 completes it and gets the whole tree.
+    let body = b"0123456789abcdefghijABCDEFGHIJ"; // 30 bytes
+    let head = b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 30\r\n\r\n";
+    let mut first = head.to_vec();
+    first.extend_from_slice(&body[..10]);
+    frames.push(server(&mut flow, &first)); // 2: headers + 10 of 30
+    frames.push(server(&mut flow, &body[10..20])); // 3: 10 more
+    frames.push(server(&mut flow, &body[20..])); // 4: the last 10
+
+    // 5: a second request, whole.
+    frames.push(client(
+        &mut flow,
+        b"GET /chunked HTTP/1.1\r\nHost: example.com\r\n\r\n",
+    ));
+
+    // 6-7: a chunked response split in the middle of a chunk.
+    let chunked_head = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n";
+    let mut part = chunked_head.to_vec();
+    part.extend_from_slice(b"10\r\n0123456789abcd"); // chunk says 16, 14 sent
+    frames.push(server(&mut flow, &part)); // 6
+    frames.push(server(&mut flow, b"ef\r\n0\r\n\r\n")); // 7: completes it
+
+    // 8: two pipelined requests in one segment; both must be dissected.
+    frames.push(client(
+        &mut flow,
+        b"GET /one HTTP/1.1\r\nHost: a\r\n\r\nGET /two HTTP/1.1\r\nHost: b\r\n\r\n",
+    ));
+
+    // 9: a response header split from its own status line, to exercise
+    // holding a first line that is itself incomplete.
+    frames.push(server(&mut flow, b"HTTP/1.1 404 Not "));
+    frames.push(server(&mut flow, b"Found\r\nContent-Length: 0\r\n\r\n")); // 10
+
+    f("desegment", frames)
+}
+
 pub fn all() -> Vec<Fixture> {
     vec![
         link_layer(),
@@ -1215,5 +1288,6 @@ pub fn all() -> Vec<Fixture> {
         null_fixture(),
         streams_fixture(),
         tcp_analysis_fixture(),
+        desegment_fixture(),
     ]
 }

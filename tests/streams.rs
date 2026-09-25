@@ -375,3 +375,104 @@ mod expert {
         }
     }
 }
+
+/// Desegmentation: messages that do not fit in one segment.
+mod desegment {
+    use super::{expect, load};
+
+    #[test]
+    fn a_split_response_is_dissected_once_it_is_whole() {
+        let f = load("desegment");
+        // Frames 2 and 3 carry part of a response; frame 4 completes it and
+        // is where the message appears.
+        expect(&f, "http.segment", &[2, 3, 6, 9]);
+        expect(&f, "http.response.code == 200", &[4, 7]);
+        expect(&f, "http.response.code == 404", &[10]);
+        // The content length is only readable because the headers and body
+        // were joined; before desegmentation frame 2 showed a truncated body
+        // and frames 3 and 4 showed nothing at all.
+        expect(&f, "http.content_length == 30", &[4]);
+    }
+
+    #[test]
+    fn the_reassembled_body_is_complete() {
+        let f = load("desegment");
+        let frame = f.iter().find(|fr| fr.number == 4).expect("frame 4");
+        let data = frame
+            .tree
+            .find("http.file_data")
+            .next()
+            .expect("the body node");
+        // 30 bytes, from three segments of ten.
+        assert_eq!(data.range().len(), 30);
+        let source = frame.source(data.source()).expect("its data source");
+        assert_eq!(
+            &source[data.range()],
+            b"0123456789abcdefghijABCDEFGHIJ",
+            "the body should be the three segments joined, in order"
+        );
+        assert_ne!(
+            data.source(),
+            0,
+            "a reassembled body cannot live in the captured frame, which only \
+             holds the last ten bytes"
+        );
+    }
+
+    #[test]
+    fn a_chunked_body_is_awaited_to_its_final_chunk() {
+        let f = load("desegment");
+        // Frame 6 ends mid-chunk: the length said 16 bytes and 14 arrived.
+        expect(&f, "http.transfer_encoding", &[7]);
+        expect(&f, "http.segment && tcp.stream == 0", &[2, 3, 6, 9]);
+    }
+
+    #[test]
+    fn pipelined_messages_in_one_segment_are_all_dissected() {
+        let f = load("desegment");
+        let frame = f.iter().find(|fr| fr.number == 8).expect("frame 8");
+        let uris: Vec<&str> = frame
+            .tree
+            .find("http.request.uri")
+            .filter_map(|n| n.str_value())
+            .collect();
+        assert_eq!(
+            uris,
+            vec!["/one", "/two"],
+            "both requests sharing the segment must appear"
+        );
+    }
+
+    #[test]
+    fn an_incomplete_first_line_is_held_too() {
+        // Frame 9 is "HTTP/1.1 404 Not " - not even a whole status line.
+        // Holding it is what lets frame 10 produce a 404.
+        let f = load("desegment");
+        expect(&f, "http.segment && frame.number == 9", &[9]);
+        expect(&f, "http.response.phrase == \"Not Found\"", &[10]);
+    }
+
+    #[test]
+    fn a_held_frame_stays_tcp_in_the_protocol_column() {
+        // It carries no message, so calling it HTTP would claim one.
+        let f = load("desegment");
+        for n in [2u32, 3, 6, 9] {
+            let frame = f.iter().find(|fr| fr.number == n).expect("frame");
+            assert_eq!(
+                frame.summary.protocol, "tcp",
+                "frame {n} carries part of a message, not a message"
+            );
+            assert_eq!(frame.summary.info, "[TCP segment of a reassembled PDU]");
+        }
+    }
+
+    #[test]
+    fn body_bytes_with_no_message_start_are_shown_not_held() {
+        // The http fixture's last frame is body data continuing a response
+        // whose start this capture never saw. Holding it would wait for a
+        // message that is already over, and the bytes would never appear.
+        let f = load("http");
+        expect(&f, "http", &[1, 2, 3, 4]);
+        expect(&f, "http.segment", &[]);
+    }
+}

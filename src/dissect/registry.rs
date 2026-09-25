@@ -945,6 +945,9 @@ pub static FIELDS: &[FieldDef] = &[
     f("http.user_agent", "User-Agent", Str),
     f("http.content_type", "Content-Type", Str),
     f("http.content_length", "Content-Length", Unsigned(Dec)),
+    f("http.transfer_encoding", "Transfer-Encoding", Str),
+    f("http.segment", "Reassembled segment", Group),
+    f("http.segment.len", "Segment length", Unsigned(Dec)),
     f("http.server", "Server", Str),
     f("http.connection", "Connection", Str),
     f("http.file_data", "File Data", Bytes),
@@ -1113,7 +1116,14 @@ impl Hasher for FnvHasher {
     }
 }
 
-type FnvMap<K, V> = HashMap<K, V, BuildHasherDefault<FnvHasher>>;
+/// A `HashMap` keyed by something small, hashed with FNV rather than the
+/// standard SipHash.
+///
+/// SipHash is the default because it makes collisions hard to provoke from
+/// outside. These maps are keyed by values the dissectors compute, and the
+/// per-frame cost of hashing a 40-byte conversation key several times is not
+/// worth paying for that: it measured as a third of dissection throughput.
+pub type FnvMap<K, V> = HashMap<K, V, BuildHasherDefault<FnvHasher>>;
 
 fn index() -> &'static FnvMap<&'static str, u16> {
     static INDEX: OnceLock<FnvMap<&'static str, u16>> = OnceLock::new();

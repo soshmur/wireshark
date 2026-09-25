@@ -263,6 +263,11 @@ impl Analysis {
 
         let seq_len = seg.seq_len();
         let first = !self.dirs[me].seen;
+        // What this direction expected *before* this segment. The keep-alive
+        // test needs it: comparing against the updated value makes every
+        // legitimate one-byte segment look like a probe, because after the
+        // update its own sequence number is exactly `next_seq - 1`.
+        let expected_before = self.dirs[me].next_seq;
         if first {
             self.dirs[me].seen = true;
             self.dirs[me].isn = seg.seq;
@@ -285,7 +290,7 @@ impl Analysis {
             && !seg.rst
             && seg.payload_len <= 1
             && !first
-            && seg.seq == self.dirs[me].next_seq.wrapping_sub(1)
+            && seg.seq == expected_before.wrapping_sub(1)
         {
             out.keep_alive = true;
             out.sequence = None;
@@ -647,6 +652,21 @@ mod tests {
         let f = a.observe(FWD, &seg(2, 5000, 1099, 1));
         assert!(f.keep_alive);
         assert_eq!(f.sequence, None, "a keep-alive must not read as a resend");
+    }
+
+    #[test]
+    fn a_one_byte_segment_that_advances_the_stream_is_not_a_keep_alive() {
+        // A probe re-sends the last byte already sent. A one-byte segment at
+        // the expected sequence number is ordinary data, and calling it a
+        // keep-alive was a false positive on every small write.
+        let mut a = Analysis::default();
+        a.observe(FWD, &seg(1, 0, 1000, 0));
+        let f = a.observe(FWD, &seg(2, 10, 1000, 1));
+        assert!(!f.keep_alive);
+        assert_eq!(f.sequence, None);
+        // And the genuine probe still is one.
+        let f = a.observe(FWD, &seg(3, 5000, 1000, 1));
+        assert!(f.keep_alive);
     }
 
     #[test]

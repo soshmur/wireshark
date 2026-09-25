@@ -8,9 +8,8 @@
 //! ~150 bytes an entry, one table capped at 200k conversations costs about
 //! 30 MB worst case, against a frame ring measured in gigabytes.
 
-use std::collections::HashMap;
-
 use crate::capture::Timestamp;
+use crate::dissect::registry::FnvMap;
 
 use super::tcp::{Analysis, Findings, Segment};
 use super::Endpoint;
@@ -74,7 +73,7 @@ struct Entry {
 /// Ids and liveness for every conversation seen.
 #[derive(Debug)]
 pub struct StreamTable {
-    ids: HashMap<StreamKey, Entry>,
+    ids: FnvMap<StreamKey, Entry>,
     next_id: u32,
     /// Beyond this many conversations, the least recently seen are dropped.
     /// A dropped conversation that reappears is given a new id, which is
@@ -94,7 +93,7 @@ impl Default for StreamTable {
 impl StreamTable {
     pub fn new() -> StreamTable {
         StreamTable {
-            ids: HashMap::new(),
+            ids: FnvMap::default(),
             next_id: 0,
             max_streams: 200_000,
             idle_timeout_secs: 300,
@@ -182,15 +181,25 @@ impl StreamTable {
         }
     }
 
-    /// Fold a segment into the conversation's TCP state and report what the
-    /// analyser made of it. A stream evicted between the lookup and this call
-    /// cannot happen (eviction only runs when a new stream is created), but
-    /// if it ever did the segment is simply not analysed.
-    pub fn analyse(&mut self, look: &Lookup, seg: &Segment) -> Findings {
-        match self.ids.get_mut(&look.key) {
+    /// Look the conversation up and fold `seg` into its TCP state, hashing
+    /// the 5-tuple once for both.
+    ///
+    /// These were two calls until hashing a 40-byte key twice per frame
+    /// showed up in the dissection benchmark.
+    pub fn lookup_and_analyse(
+        &mut self,
+        src: Endpoint,
+        dst: Endpoint,
+        now: Timestamp,
+        fresh: bool,
+        seg: &Segment,
+    ) -> (Lookup, Findings) {
+        let look = self.lookup(src, dst, 6, now, fresh);
+        let findings = match self.ids.get_mut(&look.key) {
             Some(e) => e.analysis.observe(look.direction, seg),
             None => Findings::default(),
-        }
+        };
+        (look, findings)
     }
 
     /// Read-only access to a conversation's TCP state.

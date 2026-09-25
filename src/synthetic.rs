@@ -6,10 +6,36 @@ use std::sync::Arc;
 use crate::capture::{RawFrame, Timestamp};
 use crate::dissect::proto::inet_checksum;
 
+/// How many conversations the generated frames are spread across.
+///
+/// This used to be one per frame: the source address and port both varied
+/// with `i`, so a million frames opened a million connections. That made the
+/// benchmark measure the worst case for conversation tracking rather than
+/// the dissection path it is named after - inserting into the stream table
+/// every frame and never hitting it. Real traffic is a modest number of
+/// conversations carrying many frames each.
+pub const FLOWS: u64 = 64;
+
+/// Bytes sent on one flow before frame `n` of it, where each frame carries
+/// `n % 1400` bytes. Closed form so the generator stays stateless.
+fn bytes_before(n: u64) -> u64 {
+    let cycles = n / 1400;
+    let rest = n % 1400;
+    cycles * (1400 * 1399 / 2) + rest * rest.saturating_sub(1) / 2
+}
+
 /// One synthetic frame: Ethernet II + IPv4 (no options) + TCP (with
-/// timestamps option) + `i % 1400` payload bytes, with valid checksums.
+/// timestamps option) + a payload of up to 1400 bytes, with valid checksums.
+///
+/// Frames are spread across `FLOWS` conversations, and each flow's sequence
+/// numbers follow from the bytes it has already sent - otherwise every frame
+/// looks to the analyser like a segment jumping over a gap, and the
+/// benchmark measures expert-info reporting instead of dissection.
 pub fn raw_frame(i: u64) -> RawFrame {
-    let payload_len = (i % 1400) as usize;
+    let flow = i % FLOWS;
+    let n = i / FLOWS;
+    let payload_len = (n % 1400) as usize;
+    let seq = 1 + bytes_before(n) as u32;
     let tcp_len = 32 + payload_len;
     let ip_len = 20 + tcp_len;
     let mut b = Vec::with_capacity(14 + ip_len);
@@ -23,16 +49,16 @@ pub fn raw_frame(i: u64) -> RawFrame {
     b.extend_from_slice(&(ip_len as u16).to_be_bytes());
     b.extend_from_slice(&(i as u16).to_be_bytes());
     b.extend_from_slice(&[0x40, 0x00, 64, 6, 0, 0]);
-    b.extend_from_slice(&[10, 0, (i >> 8) as u8, i as u8]);
+    b.extend_from_slice(&[10, 0, (flow >> 8) as u8, flow as u8]);
     b.extend_from_slice(&[93, 184, 216, 34]);
     let ck = inet_checksum(&[&b[ip_start..]]);
     b[ip_start + 10..ip_start + 12].copy_from_slice(&ck.to_be_bytes());
     // TCP: sport varies, dport 5001 (no upper-layer dissector), data offset 8
     // (32 bytes), PSH+ACK. This is exactly the Ethernet/IPv4/TCP benchmark path.
     let tcp_start = b.len();
-    b.extend_from_slice(&(40000 + (i % 20000) as u16).to_be_bytes());
+    b.extend_from_slice(&(40000 + flow as u16).to_be_bytes());
     b.extend_from_slice(&5001u16.to_be_bytes());
-    b.extend_from_slice(&((i * 1400) as u32).to_be_bytes());
+    b.extend_from_slice(&seq.to_be_bytes());
     b.extend_from_slice(&(1u32).to_be_bytes());
     b.extend_from_slice(&[0x80, 0x18]);
     b.extend_from_slice(&501u16.to_be_bytes());
@@ -42,7 +68,7 @@ pub fn raw_frame(i: u64) -> RawFrame {
     b.extend_from_slice(&((i as u32).wrapping_mul(7)).to_be_bytes());
     b.extend_from_slice(&((i as u32).wrapping_mul(3)).to_be_bytes());
     b.extend((0..payload_len).map(|k| (k as u8).wrapping_add(i as u8)));
-    let src = [10, 0, (i >> 8) as u8, i as u8];
+    let src = [10, 0, (flow >> 8) as u8, flow as u8];
     let dst = [93, 184, 216, 34];
     let pseudo = [0u8, 6, (tcp_len >> 8) as u8, tcp_len as u8];
     let ck = inet_checksum(&[&src, &dst, &pseudo, &b[tcp_start..]]);
@@ -79,5 +105,36 @@ mod tests {
                 .collect();
             assert_eq!(statuses, ["Good", "Good"], "frame {i}: {}", f.summary.info);
         }
+    }
+
+    #[test]
+    fn a_generated_capture_produces_no_expert_findings() {
+        // The frames are ordinary traffic, so the analyser should have
+        // nothing to say about them. It had plenty to say when every frame
+        // opened a new conversation and carried a sequence number unrelated
+        // to the last, which also made the benchmark measure reporting
+        // rather than dissection.
+        let mut state = State::new();
+        for i in 0..(FLOWS * 8) {
+            let f = dissect(LinkType::ETHERNET, i as u32 + 1, raw_frame(i), &mut state);
+            assert!(
+                f.summary.expert.is_none(),
+                "frame {i} of generated traffic: {:?}",
+                f.summary.expert
+            );
+        }
+    }
+
+    #[test]
+    fn frames_are_spread_over_a_bounded_number_of_conversations() {
+        let mut state = State::new();
+        for i in 0..(FLOWS * 4) {
+            let _ = dissect(LinkType::ETHERNET, i as u32 + 1, raw_frame(i), &mut state);
+        }
+        assert_eq!(
+            state.streams.len() as u64,
+            FLOWS,
+            "one conversation per flow, not one per frame"
+        );
     }
 }

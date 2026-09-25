@@ -5,8 +5,11 @@ use std::fmt::Write as _;
 
 use crate::dissect::ctx::{Ctx, Proto};
 use crate::dissect::cursor::{Cursor, DissectError, Result};
+use std::sync::Arc;
+
 use crate::dissect::expert::{Group, Severity};
 use crate::dissect::node::Value;
+use crate::dissect::stream::desegment::{Origin, Prefix};
 use crate::dissect::stream::tcp::{Findings, Segment};
 
 use super::{transport_checksum, CK_BAD, CK_GOOD, CK_UNVERIFIED};
@@ -67,7 +70,44 @@ pub fn dissect(data: &[u8], ctx: &mut Ctx) -> Result<()> {
     // even on a 5-tuple seen before.
     let syn = flags & 0x002 != 0;
     let fresh = syn && flags & 0x010 == 0;
-    let look = super::stream_id(ctx, "tcp.stream", sport, dport, 6, fresh);
+    // The segment is assembled here, before the option *tree* is built,
+    // because the window scale can be read straight from the option bytes.
+    // That lets the conversation be looked up and the segment analysed from
+    // one hash of the 5-tuple rather than two.
+    let seg = Segment {
+        frame: ctx.frame_number,
+        ts: ctx.ts,
+        seq,
+        ack,
+        payload_len: payload_len as u32,
+        window: u32::from(window),
+        syn,
+        fin: flags & 0x001 != 0,
+        rst: flags & 0x004 != 0,
+        ack_flag: flags & 0x010 != 0,
+        window_scale: if syn {
+            data.get(20..hdr_len).and_then(window_scale)
+        } else {
+            None
+        },
+    };
+    let analysed = match ctx.net_addrs {
+        Some(addrs) => {
+            let (src, dst) = crate::dissect::stream::endpoints(addrs, sport, dport);
+            let ts = ctx.ts;
+            let (look, findings) = ctx
+                .state
+                .streams
+                .lookup_and_analyse(src, dst, ts, fresh, &seg);
+            ctx.leaf("tcp.stream", 0..0, Value::Unsigned(u64::from(look.id)));
+            Some((look, findings))
+        }
+        // No network layer to key on: a transport header quoted inside an
+        // ICMP error belongs to the original datagram, not to a conversation
+        // either end of which this capture is tracking.
+        None => None,
+    };
+    let mut in_order = false;
     ctx.leaf("tcp.len", 0..0, Value::Unsigned(payload_len as u64));
     ctx.leaf("tcp.seq", seq_r, Value::Unsigned(u64::from(seq)));
     ctx.leaf("tcp.ack", ack_r, Value::Unsigned(u64::from(ack)));
@@ -146,27 +186,18 @@ pub fn dissect(data: &[u8], ctx: &mut Ctx) -> Result<()> {
         }
         ctx.end();
     }
-    if let Some(look) = look {
-        let scale = if syn {
-            data.get(20..hdr_len).and_then(window_scale)
-        } else {
-            None
-        };
-        let seg = Segment {
-            frame: ctx.frame_number,
-            ts: ctx.ts,
-            seq,
-            ack,
-            payload_len: payload_len as u32,
-            window: u32::from(window),
-            syn,
-            fin: flags & 0x001 != 0,
-            rst: flags & 0x004 != 0,
-            ack_flag: flags & 0x010 != 0,
-            window_scale: scale,
-        };
-        let findings = ctx.state.streams.analyse(&look, &seg);
+    if let Some((look, findings)) = analysed {
         analysis_nodes(ctx, start, &findings);
+        ctx.stream = Some((look.id, look.direction));
+        // Only bytes that advance the stream may be appended to a pending
+        // message. A retransmission would duplicate them and a gap would
+        // splice across missing data, either of which produces a message the
+        // sender never sent.
+        in_order = findings.sequence.is_none();
+        // A reset or a close ends the message, however incomplete.
+        if seg.rst || seg.fin {
+            ctx.drop_held();
+        }
     }
 
     ctx.end_at(tcp, c.abs());
@@ -174,18 +205,47 @@ pub fn dissect(data: &[u8], ctx: &mut Ctx) -> Result<()> {
     if payload_len > 0 {
         // The payload is the next layer, not a child of the TCP header.
         let payload = c.rest();
-        let next = if super::tls::looks_like_tls(payload) {
-            Proto::Tls
-        } else if super::http::looks_like_http(payload) {
-            Proto::Http
-        } else {
-            match (sport, dport) {
-                (443, _) | (_, 443) | (8443, _) | (_, 8443) => Proto::Tls,
-                (80, _) | (_, 80) | (8080, _) | (_, 8080) => Proto::Http,
-                _ => Proto::Data,
+        // Bytes of an unfinished message from earlier segments, if any. This
+        // is the half of desegmentation TCP can do: whether something is
+        // pending is knowable here, whereas what the sub-dissector will make
+        // of the payload is not, because it runs after this returns.
+        let pending = match (ctx.stream, in_order) {
+            (Some((id, dir)), true) => {
+                let ts = ctx.ts;
+                ctx.state.desegment.take(id, dir, payload, ts)
             }
+            _ => Prefix::None,
         };
-        ctx.call_next(next, c.pos());
+        match pending {
+            Prefix::Combined { bytes, origin } => {
+                // Dissect the whole message, not this segment's slice of it.
+                // It becomes a data source of its own, so every node's range
+                // points into the reassembled buffer and the hex pane can
+                // show it as a separate tab.
+                let source = ctx.add_source(Arc::from(bytes));
+                ctx.origin = Some(origin);
+                ctx.call_next_in_source(origin.proto, source);
+            }
+            Prefix::None => {
+                let next = if super::tls::looks_like_tls(payload) {
+                    Proto::Tls
+                } else if super::http::looks_like_http(payload) {
+                    Proto::Http
+                } else {
+                    match (sport, dport) {
+                        (443, _) | (_, 443) | (8443, _) | (_, 8443) => Proto::Tls,
+                        (80, _) | (_, 80) | (8080, _) | (_, 8080) => Proto::Http,
+                        _ => Proto::Data,
+                    }
+                };
+                ctx.origin = Some(Origin {
+                    proto: next,
+                    first_frame: ctx.frame_number,
+                    frames: 1,
+                });
+                ctx.call_next(next, c.pos());
+            }
+        }
     }
     Ok(())
 }

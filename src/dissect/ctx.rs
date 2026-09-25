@@ -12,6 +12,8 @@ use netscope_ffi::LinkType;
 use super::expert::{Expert, Group, Severity};
 use super::node::{NodeId, SourceId, Tree, TreeBuilder, Value};
 use super::state::State;
+use super::stream::desegment::Origin;
+use super::stream::Direction;
 use super::Summary;
 use crate::capture::Timestamp;
 
@@ -124,6 +126,16 @@ pub struct Ctx<'a> {
     pub ts: Timestamp,
     /// Per-worker state carried across frames.
     pub state: &'a mut State,
+    /// Conversation this frame belongs to, once the transport layer has
+    /// looked it up. A sub-dissector needs it to hold bytes for the rest of
+    /// its message.
+    pub stream: Option<(u32, Direction)>,
+    /// Where the bytes the current sub-dissector is looking at came from,
+    /// when they are a desegmented buffer rather than one segment.
+    pub origin: Option<Origin>,
+    /// Set when a sub-dissector kept bytes for later: this frame ends in the
+    /// middle of a message.
+    pub held_bytes: bool,
     pub summary: Summary,
     /// The tree being built, in depth-first order.
     pub tree: TreeBuilder,
@@ -177,6 +189,33 @@ impl<'a> Ctx<'a> {
             base: 0,
             next: None,
             nesting: 0,
+            stream: None,
+            origin: None,
+            held_bytes: false,
+        }
+    }
+
+    /// Keep `bytes` until the rest of the message arrives, and report whether
+    /// they were kept. A refusal (no conversation, over a cap) means the
+    /// caller must dissect what it has.
+    ///
+    /// Bytes are held per stream *and direction*, so a request and the
+    /// response to it never run into one another.
+    pub fn hold(&mut self, bytes: &[u8]) -> bool {
+        let (Some((stream, dir)), Some(origin)) = (self.stream, self.origin) else {
+            return false;
+        };
+        let ts = self.ts;
+        let kept = self.state.desegment.keep(stream, dir, bytes, origin, ts);
+        self.held_bytes |= kept;
+        kept
+    }
+
+    /// Discard any bytes held for this direction: the message they belonged
+    /// to will never be completed.
+    pub fn drop_held(&mut self) {
+        if let Some((stream, dir)) = self.stream {
+            self.state.desegment.forget(stream, dir);
         }
     }
 

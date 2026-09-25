@@ -31,10 +31,9 @@
 //! reassembly buffer with its own ordering, cap and timeout, and the analyser
 //! already reports the reordering that caused it.
 
-use std::collections::HashMap;
-
 use crate::capture::Timestamp;
 use crate::dissect::ctx::Proto;
+use crate::dissect::registry::FnvMap;
 
 use super::Direction;
 
@@ -86,7 +85,7 @@ pub enum Prefix {
 
 #[derive(Debug, Default)]
 pub struct Desegment {
-    pending: HashMap<Key, Pending>,
+    pending: FnvMap<Key, Pending>,
 }
 
 impl Desegment {
@@ -112,6 +111,11 @@ impl Desegment {
     /// Take whatever is pending for this direction and combine it with
     /// `payload`. Called by TCP before handing off.
     pub fn take(&mut self, stream: u32, dir: Direction, payload: &[u8], now: Timestamp) -> Prefix {
+        // This runs on every data segment, and the overwhelming majority of
+        // captures hold nothing at any given moment.
+        if self.pending.is_empty() {
+            return Prefix::None;
+        }
         let key = Self::key(stream, dir);
         let Some(p) = self.pending.remove(&key) else {
             return Prefix::None;
@@ -170,6 +174,9 @@ impl Desegment {
     /// Forget this direction's pending bytes: the stream reset, closed, or
     /// went out of order.
     pub fn forget(&mut self, stream: u32, dir: Direction) {
+        if self.pending.is_empty() {
+            return;
+        }
         self.pending.remove(&Self::key(stream, dir));
     }
 

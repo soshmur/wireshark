@@ -531,3 +531,48 @@ that had evicted its first chunks would come back numbered from 1 claiming
 nothing had ever been evicted. `replace` keeps the numbering, the start
 timestamp and the eviction counters, and a test drives it through an actual
 eviction rather than trusting the reasoning.
+
+## Phase 4 — conversations, analysis and desegmentation
+
+### The benchmark had stopped measuring what it was named after
+
+Wiring desegmentation in dropped dissection from ~565k frames/s to ~395k, a
+third gone, and below the 500k the brief asks for. The obvious suspects were
+the new per-frame work: a conversation lookup, the sequence analyser, and a
+check for pending bytes.
+
+Switching those maps from SipHash to the FNV hasher already in the registry,
+and folding the lookup and the analysis into one hash of the 5-tuple, bought
+back only about 15k. The cause was elsewhere.
+
+`synthetic::raw_frame` varied the source address *and* the source port with
+the frame index, so a million generated frames opened a million connections.
+That was harmless while nothing tracked conversations. Once something did,
+the benchmark was measuring the worst case for a conversation table — an
+insert every frame, a hit never — under the name of the dissection path.
+
+The generator now spreads frames over 64 flows with sequence numbers that
+follow from the bytes each flow has already sent, which is what traffic looks
+like. Dissection measures 509-541k frames/s: above the target, and about 5%
+below the pre-Phase-4 figure, which is the honest cost of the lookup, the
+analyser and one extra node per frame.
+
+The lesson is that a benchmark encodes assumptions about its input, and those
+assumptions expire. This one assumed nothing upstream cared how many distinct
+5-tuples it emitted, and that silently stopped being true.
+
+### Coherent generated traffic found a false positive
+
+Giving each flow sequence numbers that follow from its payloads made it worth
+asserting that generated traffic produces no expert findings at all. It
+produced one: every one-byte segment was reported as a TCP keep-alive.
+
+A keep-alive re-sends the last byte already sent, so it sits at
+`next_seq - 1`. The check was comparing against `next_seq` *after* folding
+the segment in, by which point an ordinary one-byte segment sits at exactly
+`next_seq - 1` too. It now compares against what the direction expected
+before the segment arrived.
+
+Nothing in the hand-written fixtures would have caught it: they contain one
+deliberate keep-alive and no other one-byte writes. It took traffic generated
+by a rule rather than chosen by hand.
