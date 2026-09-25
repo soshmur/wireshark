@@ -9,7 +9,7 @@ use std::sync::Arc;
 use netscope_ffi::LinkType;
 
 use super::node::{NodeId, SourceId, Tree, TreeBuilder, Value};
-use super::reassembly::Reassembly;
+use super::state::State;
 use super::Summary;
 use crate::capture::Timestamp;
 
@@ -120,7 +120,8 @@ pub struct Ctx<'a> {
     pub link_type: LinkType,
     pub frame_number: u32,
     pub ts: Timestamp,
-    pub reassembly: &'a mut Reassembly,
+    /// Per-worker state carried across frames.
+    pub state: &'a mut State,
     pub summary: Summary,
     /// The tree being built, in depth-first order.
     pub tree: TreeBuilder,
@@ -146,16 +147,16 @@ impl<'a> Ctx<'a> {
         link_type: LinkType,
         frame_number: u32,
         ts: Timestamp,
-        reassembly: &'a mut Reassembly,
+        state: &'a mut State,
     ) -> Ctx<'a> {
-        Ctx::with_options(link_type, frame_number, ts, reassembly, Options::default())
+        Ctx::with_options(link_type, frame_number, ts, state, Options::default())
     }
 
     pub fn with_options(
         link_type: LinkType,
         frame_number: u32,
         ts: Timestamp,
-        reassembly: &'a mut Reassembly,
+        state: &'a mut State,
         options: Options,
     ) -> Ctx<'a> {
         Ctx {
@@ -163,7 +164,7 @@ impl<'a> Ctx<'a> {
             link_type,
             frame_number,
             ts,
-            reassembly,
+            state,
             summary: Summary::default(),
             tree: TreeBuilder::new(),
             protocols: [""; 12],

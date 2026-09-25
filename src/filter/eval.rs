@@ -214,13 +214,13 @@ fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {
 mod tests {
     use super::*;
     use crate::capture::{RawFrame, Timestamp};
-    use crate::dissect::{dissect, Reassembly};
+    use crate::dissect::{dissect, State};
     use crate::filter::types::compile;
     use netscope_ffi::LinkType;
     use std::sync::Arc;
 
     fn frame(bytes: &[u8]) -> Frame {
-        let mut r = Reassembly::new();
+        let mut r = State::new();
         dissect(
             LinkType::ETHERNET,
             1,
@@ -238,7 +238,7 @@ mod tests {
     }
 
     fn synthetic() -> Frame {
-        let mut r = Reassembly::new();
+        let mut r = State::new();
         dissect(
             LinkType::ETHERNET,
             1,

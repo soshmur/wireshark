@@ -5,7 +5,7 @@ use std::time::Instant;
 use netscope::capture::Timestamp;
 use netscope::dissect::ctx::{Ctx, NetAddrs};
 use netscope::dissect::node::{Tree, Value};
-use netscope::dissect::{dissect, proto, registry, Reassembly};
+use netscope::dissect::{dissect, proto, registry, State};
 
 fn time<F: FnMut()>(name: &str, n: u32, mut f: F) {
     let t = Instant::now();
@@ -22,7 +22,7 @@ fn per_layer() {
     let raw = netscope::synthetic::raw_frame(5);
     let bytes = raw.bytes.clone();
     let n = 200_000u32;
-    let mut r = Reassembly::new();
+    let mut r = State::new();
     for (name, off) in [("eth", 0usize), ("ipv4", 14), ("tcp", 34)] {
         let t = Instant::now();
         for _ in 0..n {
@@ -69,7 +69,7 @@ fn main() {
     let n = 200_000;
     let lt = netscope_ffi::LinkType::ETHERNET;
     let raw = netscope::synthetic::raw_frame(5);
-    let mut r = Reassembly::new();
+    let mut r = State::new();
     let frame = dissect(lt, 1, raw.clone(), &mut r);
     println!(
         "frame has {} nodes, {} bytes payload",
@@ -81,7 +81,7 @@ fn main() {
         std::hint::black_box(registry::field_id("tcp.options.timestamp.tsval"));
     });
     time("dissect() whole frame", n / 4, || {
-        let mut r = Reassembly::new();
+        let mut r = State::new();
         std::hint::black_box(dissect(lt, 1, raw.clone(), &mut r));
     });
     time("TreeBuilder: 66 flat nodes", n / 4, || {

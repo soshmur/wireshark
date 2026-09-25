@@ -12,7 +12,7 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use netscope::dissect::{dissect, Frame, Reassembly};
+use netscope::dissect::{dissect, Frame, State};
 use netscope::filter::compile;
 use netscope::store::{Limits, Store, View};
 use netscope_ffi::LinkType;
@@ -45,7 +45,7 @@ fn main() {
         max_frames: u64::MAX,
         max_bytes: u64::MAX,
     });
-    let mut reassembly = Reassembly::new();
+    let mut state = State::new();
     let mut batch: Vec<Arc<Frame>> = Vec::with_capacity(4096);
     let t = Instant::now();
     for i in 0..total {
@@ -53,7 +53,7 @@ fn main() {
             LinkType::ETHERNET,
             i as u32 + 1,
             netscope::synthetic::raw_frame(i),
-            &mut reassembly,
+            &mut state,
         )));
         if batch.len() == 4096 {
             store.append(std::mem::replace(&mut batch, Vec::with_capacity(4096)));

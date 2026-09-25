@@ -129,14 +129,14 @@ impl View {
 mod tests {
     use super::*;
 
-    use crate::dissect::{dissect, Reassembly};
+    use crate::dissect::{dissect, State};
     use crate::filter::compile;
     use crate::store::{Limits, Store};
     use netscope_ffi::LinkType;
 
     fn store_with(count: u64) -> Arc<Store> {
         let store = Store::new(Limits::default());
-        let mut r = Reassembly::new();
+        let mut r = State::new();
         let batch: Vec<Arc<Frame>> = (0..count)
             .map(|i| {
                 Arc::new(dissect(

@@ -12,6 +12,8 @@ pub mod node;
 pub mod proto;
 pub mod reassembly;
 pub mod registry;
+pub mod state;
+pub mod stream;
 pub mod worker;
 
 use std::sync::Arc;
@@ -23,6 +25,8 @@ pub use ctx::{Ctx, Options, Proto};
 pub use cursor::DissectError;
 pub use node::{NodeId, NodeRef, SourceId, Tree, TreeBuilder, Value};
 pub use reassembly::Reassembly;
+pub use state::State;
+pub use stream::StreamTable;
 
 /// An address for the packet list's source and destination columns. Kept
 /// typed and inline so a layer that is later overwritten (Ethernet MACs
@@ -172,13 +176,8 @@ pub fn link_dissector(link_type: LinkType) -> Proto {
 }
 
 /// Dissect one raw frame. Never panics on any input.
-pub fn dissect(
-    link_type: LinkType,
-    number: u32,
-    raw: RawFrame,
-    reassembly: &mut Reassembly,
-) -> Frame {
-    dissect_with(link_type, number, raw, reassembly, Options::default())
+pub fn dissect(link_type: LinkType, number: u32, raw: RawFrame, state: &mut State) -> Frame {
+    dissect_with(link_type, number, raw, state, Options::default())
 }
 
 /// Dissect under explicit settings. Only what a dissector *reports* differs;
@@ -187,11 +186,11 @@ pub fn dissect_with(
     link_type: LinkType,
     number: u32,
     raw: RawFrame,
-    reassembly: &mut Reassembly,
+    state: &mut State,
     options: Options,
 ) -> Frame {
     let bytes = raw.bytes;
-    let mut ctx = Ctx::with_options(link_type, number, raw.ts, reassembly, options);
+    let mut ctx = Ctx::with_options(link_type, number, raw.ts, state, options);
 
     // The `frame` pseudo-layer comes first; its protocol list is patched in
     // once every layer has run.
@@ -357,7 +356,7 @@ mod tests {
         b.extend_from_slice(&[
             0x04, 0xd2, 0, 80, 0, 0, 0, 1, 0, 0, 0, 0, 0x50, 0x02, 0xff, 0xff, 0, 0, 0, 0,
         ]);
-        let mut r = Reassembly::new();
+        let mut r = State::new();
         let f = dissect(LinkType::ETHERNET, 7, raw(&b), &mut r);
         assert_eq!(f.summary.source.to_string(), "10.0.0.1");
         assert_eq!(f.summary.destination.to_string(), "10.0.0.2");
@@ -369,7 +368,7 @@ mod tests {
 
     #[test]
     fn truncated_frames_become_malformed_and_do_not_panic() {
-        let mut r = Reassembly::new();
+        let mut r = State::new();
         let full: Vec<u8> = (0..60u8).collect();
         for n in 0..=full.len() {
             let f = dissect(LinkType::ETHERNET, 1, raw(&full[..n]), &mut r);

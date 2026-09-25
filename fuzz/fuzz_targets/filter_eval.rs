@@ -1,7 +1,7 @@
 #![no_main]
 use libfuzzer_sys::fuzz_target;
 use netscope::capture::{RawFrame, Timestamp};
-use netscope::dissect::{dissect, Reassembly};
+use netscope::dissect::{dissect, State};
 use std::sync::Arc;
 
 // Evaluating a compiled filter against an arbitrary (often malformed) frame.
@@ -18,13 +18,13 @@ fuzz_target!(|data: &[u8]| {
         return;
     };
     let bytes = tail.strip_prefix(b"\n").unwrap_or(tail);
-    let mut reassembly = Reassembly::new();
+    let mut state = State::new();
     let raw = RawFrame {
         ts: Timestamp::default(),
         caplen: bytes.len() as u32,
         orig_len: bytes.len() as u32,
         bytes: Arc::from(bytes),
     };
-    let frame = dissect(netscope_ffi::LinkType::ETHERNET, 1, raw, &mut reassembly);
+    let frame = dissect(netscope_ffi::LinkType::ETHERNET, 1, raw, &mut state);
     let _ = netscope::filter::matches(&test, &frame);
 });

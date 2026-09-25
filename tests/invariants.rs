@@ -10,7 +10,7 @@ mod common;
 use std::sync::Arc;
 
 use netscope::capture::{RawFrame, Timestamp};
-use netscope::dissect::{dissect, registry, Frame, Reassembly};
+use netscope::dissect::{dissect, registry, Frame, State};
 use netscope_ffi::LinkType;
 
 fn check(frame: &Frame, context: &str) {
@@ -46,7 +46,7 @@ fn check(frame: &Frame, context: &str) {
         }
         if let Some((_, parent_range, parent, parent_source)) = stack.last() {
             // Zero-length nodes are generated fields with no bytes of their
-            // own; a child in another data source (reassembly) is unrelated
+            // own; a child in another data source (state) is unrelated
             // to its parent's range.
             if !r.is_empty() && !parent_range.is_empty() && *parent_source == node.source() {
                 assert!(
@@ -75,9 +75,9 @@ fn raw(bytes: &[u8]) -> RawFrame {
 fn fixture_frames_satisfy_tree_invariants() {
     for fx in common::fixtures::all() {
         let link = LinkType(i32::from(fx.link_type));
-        let mut reassembly = Reassembly::new();
+        let mut state = State::new();
         for (i, bytes) in fx.frames.iter().enumerate() {
-            let frame = dissect(link, i as u32 + 1, raw(bytes), &mut reassembly);
+            let frame = dissect(link, i as u32 + 1, raw(bytes), &mut state);
             check(&frame, &format!("{} frame {}", fx.name, i + 1));
         }
     }
@@ -88,10 +88,10 @@ fn every_truncation_of_every_fixture_frame_holds() {
     for fx in common::fixtures::all() {
         let link = LinkType(i32::from(fx.link_type));
         for (i, bytes) in fx.frames.iter().enumerate() {
-            // A fresh reassembly per truncation so fragments do not interact.
+            // A fresh state per truncation so fragments do not interact.
             for cut in 0..=bytes.len() {
-                let mut reassembly = Reassembly::new();
-                let frame = dissect(link, 1, raw(&bytes[..cut]), &mut reassembly);
+                let mut state = State::new();
+                let frame = dissect(link, 1, raw(&bytes[..cut]), &mut state);
                 check(&frame, &format!("{} frame {} cut to {cut}", fx.name, i + 1));
             }
         }
@@ -108,8 +108,8 @@ fn single_byte_corruptions_hold() {
                 for value in [0x00u8, 0x01, 0x7f, 0x80, 0xff] {
                     let mut corrupt = bytes.clone();
                     corrupt[pos] = value;
-                    let mut reassembly = Reassembly::new();
-                    let frame = dissect(link, 1, raw(&corrupt), &mut reassembly);
+                    let mut state = State::new();
+                    let frame = dissect(link, 1, raw(&corrupt), &mut state);
                     check(
                         &frame,
                         &format!("{} frame {} byte {pos}={value:#04x}", fx.name, i + 1),
@@ -142,8 +142,8 @@ fn checksum_validation_changes_reporting_and_nothing_else() {
     let mut verified_any = false;
     for fx in common::fixtures::all() {
         let link = LinkType(i32::from(fx.link_type));
-        let mut on = Reassembly::new();
-        let mut off = Reassembly::new();
+        let mut on = State::new();
+        let mut off = State::new();
         for (i, bytes) in fx.frames.iter().enumerate() {
             let n = i as u32 + 1;
             let a = dissect_with(link, n, raw(bytes), &mut on, Options::default());

@@ -6,7 +6,7 @@
 
 use std::time::Instant;
 
-use netscope::dissect::{dissect, Reassembly};
+use netscope::dissect::{dissect, State};
 use netscope_ffi::LinkType;
 
 fn main() {
@@ -16,12 +16,12 @@ fn main() {
         .unwrap_or(200_000);
     let raws: Vec<_> = (0..total).map(netscope::synthetic::raw_frame).collect();
     let bytes: usize = raws.iter().map(|r| r.bytes.len()).sum();
-    let mut reassembly = Reassembly::new();
+    let mut state = State::new();
     let t = Instant::now();
     let mut nodes = 0usize;
     let mut size = 0usize;
     for (i, raw) in raws.into_iter().enumerate() {
-        let f = dissect(LinkType::ETHERNET, i as u32 + 1, raw, &mut reassembly);
+        let f = dissect(LinkType::ETHERNET, i as u32 + 1, raw, &mut state);
         nodes += f.tree.len();
         size += f.approx_size();
     }

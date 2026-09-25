@@ -198,7 +198,7 @@ pub fn dissect(data: &[u8], ctx: &mut Ctx) -> Result<()> {
                         (1, 3) => "Address unreachable",
                         (1, 4) => "Port unreachable",
                         (3, 0) => "Hop limit exceeded in transit",
-                        (3, 1) => "Fragment reassembly time exceeded",
+                        (3, 1) => "Fragment state time exceeded",
                         _ => type_name,
                     };
                     ctx.set_info(detail);

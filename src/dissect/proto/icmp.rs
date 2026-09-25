@@ -76,7 +76,7 @@ pub fn dissect(data: &[u8], ctx: &mut Ctx) -> Result<()> {
                 (3, 4) => "Fragmentation needed",
                 (3, 13) => "Communication administratively filtered",
                 (11, 0) => "Time to live exceeded in transit",
-                (11, 1) => "Fragment reassembly time exceeded",
+                (11, 1) => "Fragment state time exceeded",
                 _ => type_name,
             };
             ctx.set_info(detail);

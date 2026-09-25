@@ -1,5 +1,5 @@
 //! HTTP/1.x request and response headers (RFC 9112). Bodies are shown as
-//! file data; multi-segment messages are handled once TCP reassembly exists.
+//! file data; multi-segment messages are handled once TCP state exists.
 
 use crate::dissect::ctx::Ctx;
 use crate::dissect::cursor::Result;

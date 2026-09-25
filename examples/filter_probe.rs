@@ -1,7 +1,7 @@
 //! Print which fixture frames a filter selects, for writing expectations.
 //!     cargo run --release --example filter_probe -- ipv4 "icmp && !udp"
 #![forbid(unsafe_code)]
-use netscope::dissect::{dissect, Reassembly};
+use netscope::dissect::{dissect, State};
 use netscope::filter::{compile, matches};
 use netscope_ffi::LinkType;
 
@@ -16,7 +16,7 @@ fn main() {
         .find(|f| f.name == name)
         .expect("fixture");
     let link = LinkType(i32::from(fx.link_type));
-    let mut r = Reassembly::new();
+    let mut r = State::new();
     let frames: Vec<_> = fx
         .frames
         .iter()

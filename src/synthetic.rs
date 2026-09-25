@@ -62,12 +62,12 @@ pub fn raw_frame(i: u64) -> RawFrame {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dissect::{dissect, Reassembly};
+    use crate::dissect::{dissect, State};
     use netscope_ffi::LinkType;
 
     #[test]
     fn synthetic_frames_dissect_with_good_checksums() {
-        let mut r = Reassembly::new();
+        let mut r = State::new();
         for i in [0u64, 1, 1399, 1400, 123_456] {
             let f = dissect(LinkType::ETHERNET, 1, raw_frame(i), &mut r);
             assert_eq!(f.summary.protocol, "tcp", "{}", f.summary.info);

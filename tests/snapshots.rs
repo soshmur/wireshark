@@ -6,7 +6,7 @@ mod common;
 
 use std::fmt::Write as _;
 
-use netscope::dissect::{dissect, registry, Frame, Reassembly};
+use netscope::dissect::{dissect, registry, Frame, State};
 use netscope_ffi::LinkType;
 
 /// One line per node: indent, label, then `[abbrev source:start-end]`.
@@ -41,10 +41,10 @@ fn dissection_trees() {
         let bytes = common::pcapng_with_link(fx.link_type, &fx.frames);
         let section = netscope::pcapng::read(&bytes).expect("parse");
         let link = LinkType(i32::from(fx.link_type));
-        let mut reassembly = Reassembly::new();
+        let mut state = State::new();
         let mut text = String::new();
         for (i, p) in section.packets.into_iter().enumerate() {
-            let frame = dissect(link, i as u32 + 1, p.frame, &mut reassembly);
+            let frame = dissect(link, i as u32 + 1, p.frame, &mut state);
             text.push_str(&render(&frame));
             text.push('\n');
         }

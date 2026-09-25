@@ -7,7 +7,7 @@ mod common;
 
 use std::collections::BTreeSet;
 
-use netscope::dissect::{dissect, registry, Reassembly};
+use netscope::dissect::{dissect, registry, State};
 use netscope_ffi::LinkType;
 
 /// Registered fields that are legitimately never emitted as tree rows:
@@ -44,9 +44,9 @@ fn every_emitted_field_is_registered_and_every_field_is_emitted() {
         let bytes = common::pcapng_with_link(fx.link_type, &fx.frames);
         let section = netscope::pcapng::read(&bytes).expect("parse");
         let link = LinkType(i32::from(fx.link_type));
-        let mut reassembly = Reassembly::new();
+        let mut state = State::new();
         for (i, p) in section.packets.into_iter().enumerate() {
-            let frame = dissect(link, i as u32 + 1, p.frame, &mut reassembly);
+            let frame = dissect(link, i as u32 + 1, p.frame, &mut state);
             for n in frame.tree.iter() {
                 let abbrev = n.abbrev();
                 emitted.insert(abbrev);

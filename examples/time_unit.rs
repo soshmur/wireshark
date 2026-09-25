@@ -2,7 +2,7 @@
 //!     cargo run --release --example time_unit -- ipv4 path/to/unit
 #![forbid(unsafe_code)]
 use netscope::capture::Timestamp;
-use netscope::dissect::{ctx::Ctx, proto, Reassembly};
+use netscope::dissect::{ctx::Ctx, proto, State};
 use std::time::Instant;
 
 fn main() {
@@ -10,7 +10,7 @@ fn main() {
     let which = args.next().unwrap_or_default();
     let path = args.next().unwrap_or_default();
     let data = std::fs::read(&path).expect("read unit");
-    let mut reassembly = Reassembly::new();
+    let mut state = State::new();
     // Warm the registry's lazy index so it is not attributed to the dissector.
     let _ = netscope::dissect::registry::lookup("ip.src");
     let iters = 200;
@@ -20,7 +20,7 @@ fn main() {
             netscope_ffi::LinkType::ETHERNET,
             1,
             Timestamp::default(),
-            &mut reassembly,
+            &mut state,
         );
         let r = match which.as_str() {
             "ipv4" => proto::ipv4::dissect(&data, &mut ctx),

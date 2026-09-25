@@ -9,7 +9,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use netscope::dissect::{dissect, Reassembly};
+use netscope::dissect::{dissect, State};
 use netscope::store::{Limits, Store};
 use netscope_ffi::LinkType;
 
@@ -45,7 +45,7 @@ fn main() {
     }
 
     let store = Store::new(Limits::default());
-    let mut reassembly = Reassembly::new();
+    let mut state = State::new();
     let mut batch = Vec::with_capacity(1024);
     for (i, p) in section.packets.iter().enumerate() {
         let lt = section
@@ -56,7 +56,7 @@ fn main() {
             lt,
             i as u32 + 1,
             p.frame.clone(),
-            &mut reassembly,
+            &mut state,
         )));
     }
     store.append(batch);

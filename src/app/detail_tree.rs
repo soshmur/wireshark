@@ -203,11 +203,11 @@ pub fn show(ui: &mut egui::Ui, frame: Option<&Frame>, state: &mut TreeState) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dissect::{dissect, Reassembly};
+    use crate::dissect::{dissect, State};
     use netscope_ffi::LinkType;
 
     fn frame() -> Frame {
-        let mut r = Reassembly::new();
+        let mut r = State::new();
         dissect(
             LinkType::ETHERNET,
             1,

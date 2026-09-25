@@ -255,11 +255,11 @@ pub fn editor(ctx: &egui::Context, open: &mut bool, rules: &mut Rules) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dissect::{dissect, Reassembly};
+    use crate::dissect::{dissect, State};
     use netscope_ffi::LinkType;
 
     fn synthetic() -> Frame {
-        let mut r = Reassembly::new();
+        let mut r = State::new();
         dissect(
             LinkType::ETHERNET,
             1,

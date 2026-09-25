@@ -178,7 +178,7 @@ impl NetscopeApp {
     /// Developer aid: fill the store with generated Ethernet/IPv4/TCP frames.
     fn preload_synthetic(&mut self, count: u64) {
         let mut batch = Vec::with_capacity(1024);
-        let mut reassembly = crate::dissect::Reassembly::new();
+        let mut state = crate::dissect::State::new();
         let options = self.config.dissect_options();
         self.link_type = netscope_ffi::LinkType::ETHERNET;
         for i in 0..count {
@@ -186,7 +186,7 @@ impl NetscopeApp {
                 netscope_ffi::LinkType::ETHERNET,
                 (i + 1) as u32,
                 crate::synthetic::raw_frame(i),
-                &mut reassembly,
+                &mut state,
                 options,
             )));
             if batch.len() == 1024 {
@@ -304,7 +304,7 @@ impl NetscopeApp {
             return;
         }
         let options = self.config.dissect_options();
-        let mut reassembly = crate::dissect::Reassembly::new();
+        let mut state = crate::dissect::State::new();
         let mut frames = Vec::with_capacity(snapshot.len());
         for frame in snapshot.iter() {
             frames.push(Arc::new(crate::dissect::dissect_with(
@@ -316,7 +316,7 @@ impl NetscopeApp {
                     orig_len: frame.orig_len,
                     bytes: Arc::clone(&frame.bytes),
                 },
-                &mut reassembly,
+                &mut state,
                 options,
             )));
         }

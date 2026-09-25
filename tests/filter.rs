@@ -8,7 +8,7 @@
 
 mod common;
 
-use netscope::dissect::{dissect, Frame, Reassembly};
+use netscope::dissect::{dissect, Frame, State};
 use netscope::filter::{compile, matches};
 use netscope_ffi::LinkType;
 
@@ -21,12 +21,12 @@ fn load(name: &str) -> Vec<Frame> {
     let bytes = common::pcapng_with_link(fx.link_type, &fx.frames);
     let section = netscope::pcapng::read(&bytes).expect("read fixture");
     let link = LinkType(i32::from(fx.link_type));
-    let mut reassembly = Reassembly::new();
+    let mut state = State::new();
     section
         .packets
         .into_iter()
         .enumerate()
-        .map(|(i, p)| dissect(link, i as u32 + 1, p.frame, &mut reassembly))
+        .map(|(i, p)| dissect(link, i as u32 + 1, p.frame, &mut state))
         .collect()
 }
 
@@ -139,7 +139,7 @@ fn ipv4_filters() {
     expect(&f, "icmp.code == 4", &[8]);
     expect(&f, "icmp.mtu == 1500", &[8]);
     expect(&f, "icmp.gateway == 192.168.1.254", &[10]);
-    // Frame 6 completes the reassembly, so the datagram's UDP header appears
+    // Frame 6 completes the state, so the datagram's UDP header appears
     // there; frames 7-10 carry a quoted UDP header inside an ICMP error.
     expect(&f, "udp", &[6, 7, 8, 9, 10]);
     expect(&f, "udp.srcport == 4000", &[6, 7, 8, 9, 10]);

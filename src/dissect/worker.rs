@@ -11,7 +11,7 @@ use netscope_ffi::LinkType;
 
 use crate::capture::RawFrame;
 use crate::dissect::Options;
-use crate::dissect::Reassembly;
+use crate::dissect::State;
 use crate::store::Store;
 
 /// Largest batch appended under one store lock.
@@ -64,7 +64,7 @@ fn run(
 ) {
     let mut next = store.next_number();
     let mut batch = Vec::with_capacity(BATCH);
-    let mut reassembly = Reassembly::new();
+    let mut state = State::new();
     loop {
         let first = match rx.recv_timeout(IDLE_POLL) {
             Ok(f) => f,
@@ -72,22 +72,14 @@ fn run(
             Err(RecvTimeoutError::Disconnected) => break,
         };
         batch.push(Arc::new(crate::dissect::dissect_with(
-            link_type,
-            next,
-            first,
-            &mut reassembly,
-            options,
+            link_type, next, first, &mut state, options,
         )));
         next = next.wrapping_add(1);
         while batch.len() < BATCH {
             match rx.try_recv() {
                 Ok(f) => {
                     batch.push(Arc::new(crate::dissect::dissect_with(
-                        link_type,
-                        next,
-                        f,
-                        &mut reassembly,
-                        options,
+                        link_type, next, f, &mut state, options,
                     )));
                     next = next.wrapping_add(1);
                 }

@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use netscope::capture::RawFrame;
-use netscope::dissect::{dissect, Reassembly};
+use netscope::dissect::{dissect, State};
 use netscope::store::{Limits, Store, CHUNK};
 use netscope_ffi::LinkType;
 
@@ -32,13 +32,13 @@ fn main() {
     let t1 = Instant::now();
     let mut batch = Vec::with_capacity(1024);
     let mut number = 1u32;
-    let mut reassembly = Reassembly::new();
+    let mut state = State::new();
     for raw in raws {
         batch.push(Arc::new(dissect(
             LinkType::ETHERNET,
             number,
             raw,
-            &mut reassembly,
+            &mut state,
         )));
         number = number.wrapping_add(1);
         if batch.len() == 1024 {

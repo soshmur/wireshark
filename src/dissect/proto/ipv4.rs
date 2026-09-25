@@ -210,7 +210,8 @@ pub fn dissect(data: &[u8], ctx: &mut Ctx) -> Result<()> {
             proto,
         };
         let result = if ctx.nesting == 0 {
-            ctx.reassembly
+            ctx.state
+                .reassembly
                 .add(key, frag_off, mf, payload, ctx.frame_number, ctx.ts)
         } else {
             FragResult::Rejected("nested fragment")
