@@ -1,6 +1,7 @@
 //! Stage 1: obtaining raw frames. Everything here is parsing-free.
 
 pub mod device;
+pub mod file;
 pub mod frame;
 pub mod preflight;
 pub mod thread;

@@ -104,6 +104,11 @@ impl Summary {
 pub struct Frame {
     pub number: u32,
     pub ts: Timestamp,
+    /// The link type this frame was dissected as. Carried per frame rather
+    /// than per capture because a pcapng file can describe several
+    /// interfaces with different ones, and exporting or re-dissecting needs
+    /// to know which applies to each frame.
+    pub link_type: LinkType,
     /// Data source 0: the captured bytes.
     pub bytes: Arc<[u8]>,
     pub orig_len: u32,
@@ -298,6 +303,7 @@ pub fn dissect_with(
     Frame {
         number,
         ts: raw.ts,
+        link_type,
         bytes,
         orig_len: raw.orig_len,
         tree,
