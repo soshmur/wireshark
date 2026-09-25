@@ -239,6 +239,7 @@ cargo run --release --example bench_store                    # dissect+store thr
 cargo run --release --example filter_probe -- dns "dns.qry.name contains \"example\""  # try a filter on a fixture
 cargo run --release --example bench_filter                   # display-filter throughput
 cargo run --release --example live_filter -- "Wi-Fi" 20      # filters + colour rules on live traffic
+NETSCOPE_EXPLAIN="tcp.analysis.keep_alive" cargo run --release --example live_filter  # triage a finding
 cargo run --release --example find_malformed -- "Wi-Fi" 20   # triage live frames that fail to dissect
 NETSCOPE_REGEN=1 cargo test --test fixtures                  # regenerate fixture captures
 cargo insta review                                           # review dissection snapshots

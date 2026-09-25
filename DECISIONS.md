@@ -625,3 +625,35 @@ zero.
 This is the second time a live run has produced a large number that needed
 explaining rather than fixing — the first was checksum offload — and both
 times the count alone pointed the wrong way.
+
+### Phase 4 fuzzing, and a benchmark number that was the machine
+
+Nineteen targets, 60 seconds each: **31,843,856 executions, no crashes, no
+artifacts.** Coverage rose across the dissectors where Phase 4 added code —
+`tcp` 599 to 896 edges, `http` 460 to 673, `tls` 662 to 740, `frame` 2,132 to
+2,480 — which is the expected shape, since the new code is reached through
+those paths.
+
+One artifact appeared, a `slow-unit` in `pcapng`. Re-run on its own it
+executes in 2 ms; it was recorded while nineteen targets had been running
+back to back. It is now a corpus seed rather than a finding.
+
+The run counts are not comparable to earlier sweeps. As corpora grow, more of
+a fixed 60-second budget goes on replaying the corpus before fuzzing starts:
+`filter` managed 150,013 runs in a standalone 120-second run and 8,456 in
+this sweep's 60. That is worth knowing before reading a drop in runs as a
+regression.
+
+The benchmark taught the same lesson in a sharper form. Measured immediately
+after the sweep, dissection came in at 142-166k frames/s against the 509-541k
+recorded earlier the same day — a two-thirds drop, and exactly the shape of a
+serious regression. It was not one. Building the *Phase 2* commit and
+alternating the two showed it measuring 143-187k as well, against the
+548-565k it had given that morning. The laptop was throttled, both builds
+equally, and the comparison — which is the part that matters — showed Phase 4
+level with Phase 2.
+
+So: absolute throughput figures in this file are only meaningful against a
+cool machine, and only comparable within one session. The method that
+survives that is measuring the old commit and the new one alternately, in the
+state the machine happens to be in.
