@@ -244,6 +244,62 @@ impl Tcp {
     }
 }
 
+/// Sequence-number bookkeeping for one TCP connection in a fixture.
+///
+/// Fixtures used to carry hand-picked round numbers, which were fine while
+/// nothing read them. The sequence analyser does read them, and reported the
+/// inconsistencies as retransmissions and lost segments - findings that were
+/// correct about the fixture and meaningless about the protocol. Building
+/// segments through a `Flow` keeps each direction's numbers following from
+/// the payloads actually sent.
+pub struct Flow {
+    client_port: u16,
+    server_port: u16,
+    client_seq: u32,
+    server_seq: u32,
+}
+
+impl Flow {
+    pub fn new(client_port: u16, server_port: u16, client_isn: u32, server_isn: u32) -> Flow {
+        Flow {
+            client_port,
+            server_port,
+            client_seq: client_isn,
+            server_seq: server_isn,
+        }
+    }
+
+    fn advance(seq: &mut u32, flags: u16, payload_len: usize) -> u32 {
+        let was = *seq;
+        let consumed =
+            payload_len as u32 + u32::from(flags & SYN != 0) + u32::from(flags & FIN != 0);
+        *seq = seq.wrapping_add(consumed);
+        was
+    }
+
+    /// A segment from the client, numbered and acknowledging the server.
+    pub fn client(&mut self, flags: u16, payload: &[u8]) -> Tcp {
+        let ack = self.server_seq;
+        let seq = Self::advance(&mut self.client_seq, flags, payload.len());
+        Tcp {
+            seq,
+            ack,
+            ..Tcp::new(self.client_port, self.server_port, flags)
+        }
+    }
+
+    /// A segment from the server, numbered and acknowledging the client.
+    pub fn server(&mut self, flags: u16, payload: &[u8]) -> Tcp {
+        let ack = self.client_seq;
+        let seq = Self::advance(&mut self.server_seq, flags, payload.len());
+        Tcp {
+            seq,
+            ack,
+            ..Tcp::new(self.server_port, self.client_port, flags)
+        }
+    }
+}
+
 /// TCP over IPv4 with correct checksum.
 pub fn tcp4(src: [u8; 4], dst: [u8; 4], t: &Tcp, payload: &[u8]) -> Vec<u8> {
     t.build(&pseudo_v4(src, dst, 6, 0), payload)
@@ -464,6 +520,23 @@ pub fn pcapng_with_link(link_type: u16, frames: &[Vec<u8>]) -> Vec<u8> {
     let id = w.interface(link_type, 262_144, "fixture0").expect("idb");
     for (i, f) in frames.iter().enumerate() {
         w.packet(id, ts(i as u32), f.len() as u32, f).expect("epb");
+    }
+    w.finish().expect("finish")
+}
+
+/// Write a fixture, honouring its per-frame times when it has them.
+pub fn pcapng_fixture(fx: &fixtures::Fixture) -> Vec<u8> {
+    let Some(times) = &fx.times else {
+        return pcapng_with_link(fx.link_type, &fx.frames);
+    };
+    let mut w = Writer::new(Vec::new(), "netscope fixture generator").expect("write");
+    let id = w.interface(fx.link_type, 262_144, "fixture0").expect("idb");
+    for (f, micros) in fx.frames.iter().zip(times) {
+        let t = Timestamp {
+            secs: 1_700_000_000 + (micros / 1_000_000) as i64,
+            nanos: ((micros % 1_000_000) * 1000) as u32,
+        };
+        w.packet(id, t, f.len() as u32, f).expect("epb");
     }
     w.finish().expect("finish")
 }

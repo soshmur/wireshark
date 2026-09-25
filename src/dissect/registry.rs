@@ -684,6 +684,49 @@ pub static FIELDS: &[FieldDef] = &[
     // TCP
     f("tcp", "Transmission Control Protocol", Protocol),
     f("tcp.stream", "Stream index", Unsigned(Dec)),
+    f("tcp.analysis", "SEQ/ACK analysis", Group),
+    f(
+        "tcp.analysis.bytes_in_flight",
+        "Bytes in flight",
+        Unsigned(Dec),
+    ),
+    f("tcp.analysis.retransmission", "Retransmission", Bool),
+    f(
+        "tcp.analysis.fast_retransmission",
+        "Fast retransmission",
+        Bool,
+    ),
+    f(
+        "tcp.analysis.spurious_retransmission",
+        "Spurious retransmission",
+        Bool,
+    ),
+    f("tcp.analysis.out_of_order", "Out-of-order segment", Bool),
+    f("tcp.analysis.overlap", "Overlapping segment", Bool),
+    f(
+        "tcp.analysis.lost_segment",
+        "Previous segment not captured",
+        Bool,
+    ),
+    f("tcp.analysis.duplicate_ack", "Duplicate ACK", Bool),
+    f(
+        "tcp.analysis.duplicate_ack_num",
+        "Duplicate ACK number",
+        Unsigned(Dec),
+    ),
+    f(
+        "tcp.analysis.duplicate_ack_frame",
+        "Duplicate to the ACK in frame",
+        Unsigned(Dec),
+    ),
+    f("tcp.analysis.zero_window", "Zero window", Bool),
+    f("tcp.analysis.window_full", "Window full", Bool),
+    f("tcp.analysis.keep_alive", "Keep-alive", Bool),
+    f(
+        "tcp.analysis.ack_lost_segment",
+        "ACK to an uncaptured segment",
+        Bool,
+    ),
     f("tcp.srcport", "Source Port", Unsigned(Dec)),
     f("tcp.dstport", "Destination Port", Unsigned(Dec)),
     alias(

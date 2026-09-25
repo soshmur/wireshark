@@ -1,16 +1,18 @@
-//! The stream id table: 5-tuple to stable id, plus the per-stream state the
-//! TCP analyser needs.
+//! The stream id table: 5-tuple to stable id, plus the per-conversation TCP
+//! sequence state.
 //!
-//! Two maps rather than one, because they want different lifetimes. The id
-//! map has to survive for the whole capture, or a filter the user types after
-//! the fact would name a different conversation than the one they clicked.
-//! The analysis state only matters while a conversation is live, is far
-//! larger per entry, and is aged out.
+//! One map, not two. Splitting the ids from the analysis state was tempting
+//! because the ids must survive for the whole capture while the analysis only
+//! matters while a conversation is live - but two tables means two caps and
+//! two eviction policies that can disagree about whether a stream exists. At
+//! ~150 bytes an entry, one table capped at 200k conversations costs about
+//! 30 MB worst case, against a frame ring measured in gigabytes.
 
 use std::collections::HashMap;
 
 use crate::capture::Timestamp;
 
+use super::tcp::{Analysis, Findings, Segment};
 use super::Endpoint;
 
 /// A conversation, keyed so both directions land on the same entry.
@@ -45,13 +47,15 @@ impl StreamKey {
     }
 }
 
-/// What a lookup tells the dissector.
+/// What a lookup tells the dissector. Carries the key so a follow-up call
+/// can reach the same entry without rebuilding it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Lookup {
     pub id: u32,
     pub direction: Direction,
     /// True when this frame created the stream.
     pub first: bool,
+    pub key: StreamKey,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -61,6 +65,10 @@ struct Entry {
     /// whose source matches runs in the forward direction.
     origin: Endpoint,
     last_seen: Timestamp,
+    /// TCP sequence state. Unused for UDP, and cheap enough at ~150 bytes
+    /// that giving every entry one is better than a second table with its
+    /// own cap and its own eviction policy to reason about.
+    analysis: Analysis,
 }
 
 /// Ids and liveness for every conversation seen.
@@ -130,11 +138,13 @@ impl StreamTable {
                     id,
                     origin: src,
                     last_seen: now,
+                    analysis: Analysis::default(),
                 };
                 return Lookup {
                     id,
                     direction: Direction::Forward,
                     first: true,
+                    key,
                 };
             }
         }
@@ -149,6 +159,7 @@ impl StreamTable {
                 id: e.id,
                 direction,
                 first: false,
+                key,
             };
         }
         self.evict_if_full(now);
@@ -160,13 +171,31 @@ impl StreamTable {
                 id,
                 origin: src,
                 last_seen: now,
+                analysis: Analysis::default(),
             },
         );
         Lookup {
             id,
             direction: Direction::Forward,
             first: true,
+            key,
         }
+    }
+
+    /// Fold a segment into the conversation's TCP state and report what the
+    /// analyser made of it. A stream evicted between the lookup and this call
+    /// cannot happen (eviction only runs when a new stream is created), but
+    /// if it ever did the segment is simply not analysed.
+    pub fn analyse(&mut self, look: &Lookup, seg: &Segment) -> Findings {
+        match self.ids.get_mut(&look.key) {
+            Some(e) => e.analysis.observe(look.direction, seg),
+            None => Findings::default(),
+        }
+    }
+
+    /// Read-only access to a conversation's TCP state.
+    pub fn analysis(&self, key: &StreamKey) -> Option<&Analysis> {
+        self.ids.get(key).map(|e| &e.analysis)
     }
 
     /// Drop idle conversations, then the oldest, until there is room.

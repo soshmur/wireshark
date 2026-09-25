@@ -18,7 +18,7 @@ fn load(name: &str) -> Vec<Frame> {
         .into_iter()
         .find(|f| f.name == name)
         .unwrap_or_else(|| panic!("no fixture named {name}"));
-    let bytes = common::pcapng_with_link(fx.link_type, &fx.frames);
+    let bytes = common::pcapng_fixture(&fx);
     let section = netscope::pcapng::read(&bytes).expect("read fixture");
     let link = LinkType(i32::from(fx.link_type));
     let mut state = State::new();

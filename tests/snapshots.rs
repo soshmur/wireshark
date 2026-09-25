@@ -38,7 +38,7 @@ pub fn render(frame: &Frame) -> String {
 #[test]
 fn dissection_trees() {
     for fx in common::fixtures::all() {
-        let bytes = common::pcapng_with_link(fx.link_type, &fx.frames);
+        let bytes = common::pcapng_fixture(&fx);
         let section = netscope::pcapng::read(&bytes).expect("parse");
         let link = LinkType(i32::from(fx.link_type));
         let mut state = State::new();

@@ -18,7 +18,7 @@ fn fixture_files_match_generators() {
     let regen = std::env::var("NETSCOPE_REGEN").is_ok();
     let mut stale = Vec::new();
     for fx in fixtures::all() {
-        let bytes = common::pcapng_with_link(fx.link_type, &fx.frames);
+        let bytes = common::pcapng_fixture(&fx);
         let path = fixture_path(fx.name);
         if regen {
             std::fs::create_dir_all(path.parent().expect("dir")).expect("mkdir");
@@ -39,13 +39,16 @@ fn fixture_files_match_generators() {
 #[test]
 fn fixtures_parse_back() {
     for fx in fixtures::all() {
-        let bytes = common::pcapng_with_link(fx.link_type, &fx.frames);
+        let bytes = common::pcapng_fixture(&fx);
         let section = netscope::pcapng::read(&bytes).expect("parse");
         assert_eq!(section.packets.len(), fx.frames.len(), "{}", fx.name);
         assert_eq!(section.interfaces[0].link_type, fx.link_type);
         for (i, p) in section.packets.iter().enumerate() {
             assert_eq!(&*p.frame.bytes, &fx.frames[i][..], "{} frame {i}", fx.name);
-            assert_eq!(p.frame.ts, common::ts(i as u32));
+            // Fixtures without explicit times are one second apart.
+            if fx.times.is_none() {
+                assert_eq!(p.frame.ts, common::ts(i as u32), "{} frame {i}", fx.name);
+            }
         }
     }
 }

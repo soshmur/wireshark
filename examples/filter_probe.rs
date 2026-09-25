@@ -17,23 +17,17 @@ fn main() {
         .expect("fixture");
     let link = LinkType(i32::from(fx.link_type));
     let mut r = State::new();
-    let frames: Vec<_> = fx
-        .frames
-        .iter()
+    // Go through the fixture writer and reader so the frames carry the
+    // fixture's real timestamps. Dissecting the raw bytes with a default
+    // timestamp makes every frame simultaneous, which silently changes what
+    // the TCP analyser concludes: a retransmission reads as out-of-order.
+    let bytes = common::pcapng_fixture(&fx);
+    let section = netscope::pcapng::read(&bytes).expect("read fixture");
+    let frames: Vec<_> = section
+        .packets
+        .into_iter()
         .enumerate()
-        .map(|(i, b)| {
-            dissect(
-                link,
-                i as u32 + 1,
-                netscope::capture::RawFrame {
-                    ts: netscope::capture::Timestamp::default(),
-                    caplen: b.len() as u32,
-                    orig_len: b.len() as u32,
-                    bytes: std::sync::Arc::from(b.as_slice()),
-                },
-                &mut r,
-            )
-        })
+        .map(|(i, p)| dissect(link, i as u32 + 1, p.frame, &mut r))
         .collect();
     for filter in args {
         match compile(&filter) {

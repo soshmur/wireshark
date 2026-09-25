@@ -7,6 +7,11 @@ pub struct Fixture {
     pub name: &'static str,
     pub link_type: u16,
     pub frames: Vec<Vec<u8>>,
+    /// Microsecond offsets from the base capture time, one per frame.
+    /// `None` spaces frames one second apart, which suits every fixture that
+    /// is not about timing. TCP analysis is: telling an out-of-order segment
+    /// from a retransmission is a question of milliseconds.
+    pub times: Option<Vec<u64>>,
 }
 
 fn f(name: &'static str, frames: Vec<Vec<u8>>) -> Fixture {
@@ -14,6 +19,18 @@ fn f(name: &'static str, frames: Vec<Vec<u8>>) -> Fixture {
         name,
         link_type: 1,
         frames,
+        times: None,
+    }
+}
+
+/// A fixture whose frames carry explicit microsecond offsets.
+fn timed(name: &'static str, framed: Vec<(u64, Vec<u8>)>) -> Fixture {
+    let (times, frames): (Vec<u64>, Vec<Vec<u8>>) = framed.into_iter().unzip();
+    Fixture {
+        name,
+        link_type: 1,
+        frames,
+        times: Some(times),
     }
 }
 
@@ -343,7 +360,7 @@ fn tcp_udp_fixture() -> Fixture {
     let data_frame = eth_ipv4(6, &tcp4(IP_A, IP_B, &data, b"payload bytes"));
     let mut sack = Tcp::new(5001, 51000, ACK);
     sack.seq = 5001;
-    sack.ack = 1001;
+    sack.ack = 1014;
     sack.options = vec![
         1, 1, 5, 18, 0, 0, 0x04, 0x00, 0, 0, 0x08, 0x00, 0, 0, 0x0c, 0x00, 0, 0, 0x10, 0x00,
     ];
@@ -353,18 +370,27 @@ fn tcp_udp_fixture() -> Fixture {
         0x0800,
         &ipv4(IP_B, IP_A, 6, &tcp4(IP_B, IP_A, &sack, &[])),
     );
+    // Every flag at once, to exercise the flag rendering. It still has to be
+    // numbered coherently or the sequence analyser reports it - the frame is
+    // about flags, not about being a retransmission.
     let mut all = Tcp::new(
         51000,
         5001,
         FIN | SYN | RST | PSH | ACK | URG | ECE | CWR | 0x100,
     );
+    all.seq = 1014;
+    all.ack = 5001;
     all.urgent = 7;
     all.window = 0;
     let all_flags = eth_ipv4(6, &tcp4(IP_A, IP_B, &all, &[]));
     let mut eol = Tcp::new(51000, 5001, ACK);
+    eol.seq = 1016;
+    eol.ack = 5001;
     eol.options = vec![2, 4, 0x05, 0xb4, 0, 0, 0, 0];
     let eol_frame = eth_ipv4(6, &tcp4(IP_A, IP_B, &eol, &[]));
     let mut unknown_opt = Tcp::new(51000, 5001, ACK);
+    unknown_opt.seq = 1016;
+    unknown_opt.ack = 5001;
     unknown_opt.options = vec![254, 6, 1, 2, 3, 4, 30, 4, 0, 0];
     let unknown_frame = eth_ipv4(6, &tcp4(IP_A, IP_B, &unknown_opt, &[]));
     let rst = eth(
@@ -375,10 +401,31 @@ fn tcp_udp_fixture() -> Fixture {
             IP_B,
             IP_A,
             6,
-            &tcp4(IP_B, IP_A, &Tcp::new(5001, 51000, RST), &[]),
+            &tcp4(
+                IP_B,
+                IP_A,
+                &Tcp {
+                    seq: 5001,
+                    ack: 1016,
+                    ..Tcp::new(5001, 51000, RST)
+                },
+                &[],
+            ),
         ),
     );
-    let mut short = eth_ipv4(6, &tcp4(IP_A, IP_B, &Tcp::new(51000, 5001, ACK), &[]));
+    let mut short = eth_ipv4(
+        6,
+        &tcp4(
+            IP_A,
+            IP_B,
+            &Tcp {
+                seq: 1016,
+                ack: 5001,
+                ..Tcp::new(51000, 5001, ACK)
+            },
+            &[],
+        ),
+    );
     short.resize(60, 0); // padding must not become payload
     let udp_frame = eth_ipv4(17, &udp4(IP_A, IP_B, 40000, 9, b"udp payload"));
     let udp_nocksum = {
@@ -687,46 +734,39 @@ fn dhcp_fixture() -> Fixture {
 }
 
 fn http_fixture() -> Fixture {
+    let mut flow = Flow::new(52000, 80, 1, 1);
     let req = b"GET /index.html HTTP/1.1\r\nHost: example.com\r\nUser-Agent: netscope-test/1.0\r\nAccept: */*\r\nConnection: keep-alive\r\n\r\n";
-    let mut t = Tcp::new(52000, 80, PSH | ACK);
-    t.seq = 1;
-    t.ack = 1;
+    let t = flow.client(PSH | ACK, req);
     let req_frame = eth_ipv4(6, &tcp4(IP_A, IP_B, &t, req));
     let resp = b"HTTP/1.1 200 OK\r\nServer: test\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: 13\r\n\r\n<html></html>";
-    let mut t = Tcp::new(80, 52000, PSH | ACK);
-    t.seq = 1;
-    t.ack = 1 + req.len() as u32;
+    let t = flow.server(PSH | ACK, resp);
     let resp_frame = eth(
         MAC_A,
         MAC_B,
         0x0800,
         &ipv4(IP_B, IP_A, 6, &tcp4(IP_B, IP_A, &t, resp)),
     );
-    // POST on a non-standard port, detected by heuristic.
+    // POST on a non-standard port, detected by heuristic. A different
+    // connection, so its own flow.
     let post = b"POST /api HTTP/1.1\r\nHost: example.com\r\nContent-Length: 2\r\n\r\n{}";
-    let mut t = Tcp::new(52001, 8081, PSH | ACK);
-    t.seq = 1;
-    t.ack = 1;
+    let mut other = Flow::new(52001, 8081, 1, 1);
+    let t = other.client(PSH | ACK, post);
     let post_frame = eth_ipv4(6, &tcp4(IP_A, IP_B, &t, post));
-    // Continuation: port 80 but no request line.
-    let mut t = Tcp::new(80, 52000, ACK);
-    t.seq = 100;
-    t.ack = 200;
+    // Continuation: port 80 but no request line. It continues the first
+    // connection, so it follows on from the response.
+    let body = b"more body bytes without headers";
+    let t = flow.server(PSH | ACK, body);
     let cont_frame = eth(
         MAC_A,
         MAC_B,
         0x0800,
-        &ipv4(
-            IP_B,
-            IP_A,
-            6,
-            &tcp4(IP_B, IP_A, &t, b"more body bytes without headers"),
-        ),
+        &ipv4(IP_B, IP_A, 6, &tcp4(IP_B, IP_A, &t, body)),
     );
     f("http", vec![req_frame, resp_frame, post_frame, cont_frame])
 }
 
 fn tls_fixture() -> Fixture {
+    let mut flow = Flow::new(53000, 443, 1, 1);
     let ch = tls_client_hello(
         0x0303,
         &[0x5a; 32],
@@ -738,10 +778,9 @@ fn tls_fixture() -> Fixture {
             tls_ext(10, &[0, 4, 0, 0x1d, 0, 0x17]),
         ],
     );
-    let mut t = Tcp::new(53000, 443, PSH | ACK);
-    t.seq = 1;
-    t.ack = 1;
-    let ch_frame = eth_ipv4(6, &tcp4(IP_A, IP_B, &t, &tls_record(22, 0x0301, &ch)));
+    let ch_rec = tls_record(22, 0x0301, &ch);
+    let t = flow.client(PSH | ACK, &ch_rec);
+    let ch_frame = eth_ipv4(6, &tcp4(IP_A, IP_B, &t, &ch_rec));
     let sh = tls_server_hello(
         0x0303,
         0x1301,
@@ -753,9 +792,7 @@ fn tls_fixture() -> Fixture {
     let mut server = tls_record(22, 0x0303, &sh);
     server.extend_from_slice(&tls_record(20, 0x0303, &[1]));
     server.extend_from_slice(&tls_record(23, 0x0303, &[0x99; 40]));
-    let mut t = Tcp::new(443, 53000, PSH | ACK);
-    t.seq = 1;
-    t.ack = 200;
+    let t = flow.server(PSH | ACK, &server);
     let sh_frame = eth(
         MAC_A,
         MAC_B,
@@ -763,17 +800,13 @@ fn tls_fixture() -> Fixture {
         &ipv4(IP_B, IP_A, 6, &tcp4(IP_B, IP_A, &t, &server)),
     );
     let alert = tls_record(21, 0x0303, &[1, 0]);
-    let mut t = Tcp::new(53000, 443, PSH | ACK);
-    t.seq = 200;
-    t.ack = 300;
+    let t = flow.client(PSH | ACK, &alert);
     let alert_frame = eth_ipv4(6, &tcp4(IP_A, IP_B, &t, &alert));
     // TLS 1.2 style: certificate handshake, then an encrypted handshake message.
     let cert = tls_handshake(11, &[0, 0, 7, 0, 0, 4, 0x30, 0x82, 0x01, 0x02]);
     let mut v12 = tls_record(22, 0x0303, &cert);
     v12.extend_from_slice(&tls_record(22, 0x0303, &[0xaa; 16]));
-    let mut t = Tcp::new(443, 53000, PSH | ACK);
-    t.seq = 300;
-    t.ack = 210;
+    let t = flow.server(PSH | ACK, &v12);
     let v12_frame = eth(
         MAC_A,
         MAC_B,
@@ -784,9 +817,7 @@ fn tls_fixture() -> Fixture {
     let mut partial = tls_record(23, 0x0303, &[0; 30]);
     partial[3] = 0x03;
     partial[4] = 0xe8;
-    let mut t = Tcp::new(443, 53000, ACK);
-    t.seq = 400;
-    t.ack = 210;
+    let t = flow.server(ACK, &partial);
     let partial_frame = eth(
         MAC_A,
         MAC_B,
@@ -794,10 +825,9 @@ fn tls_fixture() -> Fixture {
         &ipv4(IP_B, IP_A, 6, &tcp4(IP_B, IP_A, &t, &partial)),
     );
     // Non-TLS bytes on 443.
-    let mut t = Tcp::new(53000, 443, PSH | ACK);
-    t.seq = 500;
-    t.ack = 500;
-    let junk_frame = eth_ipv4(6, &tcp4(IP_A, IP_B, &t, b"not tls at all"));
+    let junk = b"not tls at all";
+    let t = flow.client(PSH | ACK, junk);
+    let junk_frame = eth_ipv4(6, &tcp4(IP_A, IP_B, &t, junk));
     f(
         "tls",
         vec![
@@ -883,6 +913,12 @@ fn malformed_fixture() -> Fixture {
     let mut ch = tls_client_hello(0x0303, &[], &[0x1301], &[tls_ext(0, &[0xff, 0xff, 0, 0])]);
     let ch_len = ch.len();
     ch[ch_len - 3] = 0xff; // corrupt extension length
+                           // Follows on from `tls_hs` in the same direction: the payload is meant to
+                           // be malformed, the sequence number is not.
+    let t = Tcp {
+        seq: 1 + bad_hs.len() as u32,
+        ..t
+    };
     let tls_ext_bad = eth_ipv4(6, &tcp4(IP_A, IP_B, &t, &tls_record(22, 0x0303, &ch)));
     // ICMPv6 option with length 0.
     let mut ns = vec![0; 4];
@@ -973,12 +1009,18 @@ fn null_fixture() -> Fixture {
         name: "null_loopback",
         link_type: 0,
         frames,
+        times: None,
     }
 }
 
 /// Conversations: two concurrent TCP connections, both directions of each, a
 /// third that reuses the first one's ports after it closes, two UDP flows and
 /// one TCP connection over IPv6.
+///
+/// Sequence numbers are realistic. An earlier version left every segment at
+/// the `Tcp::new` default of 1000, which made each direction's second data
+/// segment look like a retransmission of its first, and the analysis findings
+/// for the whole fixture were noise.
 fn streams_fixture() -> Fixture {
     // Direction matters here, so build both ways explicitly rather than via
     // the `eth_ipv4` helper, which always runs A -> B.
@@ -986,11 +1028,21 @@ fn streams_fixture() -> Fixture {
         |proto: u8, payload: &[u8]| eth(MAC_B, MAC_A, 0x0800, &ipv4(IP_A, IP_B, proto, payload));
     let b_to_a =
         |proto: u8, payload: &[u8]| eth(MAC_A, MAC_B, 0x0800, &ipv4(IP_B, IP_A, proto, payload));
-    let client = |port: u16, flags: u16, payload: &[u8]| {
-        a_to_b(6, &tcp4(IP_A, IP_B, &Tcp::new(port, 80, flags), payload))
+    let client = |port: u16, flags: u16, seq: u32, ack: u32, payload: &[u8]| {
+        let t = Tcp {
+            seq,
+            ack,
+            ..Tcp::new(port, 80, flags)
+        };
+        a_to_b(6, &tcp4(IP_A, IP_B, &t, payload))
     };
-    let server = |port: u16, flags: u16, payload: &[u8]| {
-        b_to_a(6, &tcp4(IP_B, IP_A, &Tcp::new(80, port, flags), payload))
+    let server = |port: u16, flags: u16, seq: u32, ack: u32, payload: &[u8]| {
+        let t = Tcp {
+            seq,
+            ack,
+            ..Tcp::new(80, port, flags)
+        };
+        b_to_a(6, &tcp4(IP_B, IP_A, &t, payload))
     };
     let v6 = |src: [u8; 16], dst: [u8; 16], dst_mac: [u8; 6], src_mac: [u8; 6], t: &Tcp| {
         eth(
@@ -1004,31 +1056,143 @@ fn streams_fixture() -> Fixture {
     f(
         "streams",
         vec![
-            // Stream 0: opened, used both ways, closed.
-            client(40000, SYN, &[]),                // 1
-            server(40000, SYN | ACK, &[]),          // 2
-            client(40000, ACK, &[]),                // 3
-            client(40000, PSH | ACK, b"one"),       // 4
-            server(40000, PSH | ACK, b"reply one"), // 5
-            // Stream 1: a second connection, interleaved with the first.
-            client(40001, SYN, &[]),          // 6
-            server(40001, SYN | ACK, &[]),    // 7
-            client(40001, PSH | ACK, b"two"), // 8
+            // Stream 0: client ISN 1000, server ISN 5000.
+            client(40000, SYN, 1000, 0, &[]),                   // 1
+            server(40000, SYN | ACK, 5000, 1001, &[]),          // 2
+            client(40000, ACK, 1001, 5001, &[]),                // 3
+            client(40000, PSH | ACK, 1001, 5001, b"one"),       // 4
+            server(40000, PSH | ACK, 5001, 1004, b"reply one"), // 5
+            // Stream 1: a second connection, interleaved. ISNs 2000 / 6000.
+            client(40001, SYN, 2000, 0, &[]),             // 6
+            server(40001, SYN | ACK, 6000, 2001, &[]),    // 7
+            client(40001, PSH | ACK, 2001, 6001, b"two"), // 8
             // Stream 0 closes.
-            client(40000, FIN | ACK, &[]), // 9
-            server(40000, FIN | ACK, &[]), // 10
+            client(40000, FIN | ACK, 1004, 5010, &[]), // 9
+            server(40000, FIN | ACK, 5010, 1005, &[]), // 10
             // Stream 2: port 40000 reused after the close. Same 5-tuple as
-            // stream 0, but a different connection.
-            client(40000, SYN, &[]),            // 11
-            server(40000, SYN | ACK, &[]),      // 12
-            client(40000, PSH | ACK, b"three"), // 13
+            // stream 0, but a different connection, so different ISNs.
+            client(40000, SYN, 3000, 0, &[]),               // 11
+            server(40000, SYN | ACK, 7000, 3001, &[]),      // 12
+            client(40000, PSH | ACK, 3001, 7001, b"three"), // 13
             // Streams 3 and 4: two UDP flows, the first seen both ways.
             a_to_b(17, &udp4(IP_A, IP_B, 5353, 53, b"q")), // 14
             b_to_a(17, &udp4(IP_B, IP_A, 53, 5353, b"a")), // 15
             a_to_b(17, &udp4(IP_A, IP_B, 5354, 53, b"q2")), // 16
             // Stream 5: TCP over IPv6, both directions.
-            v6(IP6_A, IP6_B, MAC_B, MAC_A, &Tcp::new(40000, 80, SYN)), // 17
-            v6(IP6_B, IP6_A, MAC_A, MAC_B, &Tcp::new(80, 40000, SYN | ACK)), // 18
+            v6(
+                IP6_A,
+                IP6_B,
+                MAC_B,
+                MAC_A,
+                &Tcp {
+                    seq: 4000,
+                    ..Tcp::new(40000, 80, SYN)
+                },
+            ), // 17
+            v6(
+                IP6_B,
+                IP6_A,
+                MAC_A,
+                MAC_B,
+                &Tcp {
+                    seq: 8000,
+                    ack: 4001,
+                    ..Tcp::new(80, 40000, SYN | ACK)
+                },
+            ), // 18
+        ],
+    )
+}
+
+/// One connection exercising every sequence-analysis finding.
+///
+/// Timing is the point here, so the frames carry explicit microsecond
+/// offsets: a repeat inside 3 ms is the network reordering, one after a
+/// pause is a retransmission, and one within 20 ms of the third duplicate
+/// ACK is a fast retransmission. At the default one-second spacing every
+/// repeat would read as a plain retransmission and three of the findings
+/// would be unreachable.
+fn tcp_analysis_fixture() -> Fixture {
+    let client = |flags: u16, seq: u32, ack: u32, win: u16, payload: &[u8]| {
+        let t = Tcp {
+            seq,
+            ack,
+            window: win,
+            ..Tcp::new(40000, 80, flags)
+        };
+        eth(
+            MAC_B,
+            MAC_A,
+            0x0800,
+            &ipv4(IP_A, IP_B, 6, &tcp4(IP_A, IP_B, &t, payload)),
+        )
+    };
+    let server = |flags: u16, seq: u32, ack: u32, win: u16, payload: &[u8]| {
+        let t = Tcp {
+            seq,
+            ack,
+            window: win,
+            ..Tcp::new(80, 40000, flags)
+        };
+        eth(
+            MAC_A,
+            MAC_B,
+            0x0800,
+            &ipv4(IP_B, IP_A, 6, &tcp4(IP_B, IP_A, &t, payload)),
+        )
+    };
+    const W: u16 = 8192;
+    let d = b"0123456789"; // ten bytes per data segment
+
+    timed(
+        "tcp_analysis",
+        vec![
+            // Handshake. Client ISN 1000, server ISN 5000.
+            (0, client(SYN, 1000, 0, W, &[])),              // 1
+            (1_000, server(SYN | ACK, 5000, 1001, W, &[])), // 2
+            (2_000, client(ACK, 1001, 5001, W, &[])),       // 3
+            // Ordinary data, no findings.
+            (10_000, client(PSH | ACK, 1001, 5001, W, d)), // 4  seq 1001..1011
+            // Retransmission: the same bytes after a long pause, before the
+            // server has acknowledged them. Order matters - once frame 6
+            // acknowledges the data, a further resend is *spurious* rather
+            // than a plain retransmission, and the plain case is unreachable.
+            (500_000, client(PSH | ACK, 1001, 5001, W, d)), // 5
+            (520_000, server(ACK, 5001, 1011, W, &[])),     // 6
+            // Spurious retransmission: acknowledged in frame 6.
+            (600_000, client(PSH | ACK, 1001, 5001, W, d)), // 7
+            //
+            // Out-of-order: 1021 arrives before 1011, within the 3 ms window.
+            (700_000, client(PSH | ACK, 1021, 5001, W, d)), // 8  gap!
+            (700_500, client(PSH | ACK, 1011, 5001, W, d)), // 9
+            //
+            // A gap the capture never fills: 1031..1041 is missing.
+            (800_000, client(PSH | ACK, 1041, 5001, W, d)), // 10
+            //
+            // Three duplicate ACKs from the server, then an immediate resend.
+            (810_000, server(ACK, 5001, 1031, W, &[])), // 11
+            (811_000, server(ACK, 5001, 1031, W, &[])), // 12 dup 1
+            (812_000, server(ACK, 5001, 1031, W, &[])), // 13 dup 2
+            (813_000, server(ACK, 5001, 1031, W, &[])), // 14 dup 3
+            (815_000, client(PSH | ACK, 1031, 5001, W, d)), // 15 fast retx
+            //
+            // Overlap: starts inside what we have, runs past it.
+            (900_000, client(PSH | ACK, 1046, 5001, W, d)), // 16
+            //
+            // Zero window from the server, then a probe from the client.
+            (1_000_000, server(ACK, 5001, 1056, 0, &[])), // 17
+            (1_100_000, client(ACK, 1055, 5001, W, b"x")), // 18 keep-alive
+            //
+            // Window full: the server reopens a tiny window and the client
+            // fills it exactly.
+            (1_200_000, server(ACK, 5001, 1056, 10, &[])), // 19
+            (1_210_000, client(PSH | ACK, 1056, 5001, W, d)), // 20
+            //
+            // An ACK for data this capture never saw sent.
+            (1_300_000, server(ACK, 5001, 9999, W, &[])), // 21
+            // Teardown.
+            (1_400_000, client(FIN | ACK, 1066, 5001, W, &[])), // 22
+            (1_410_000, server(FIN | ACK, 5001, 1067, W, &[])), // 23
         ],
     )
 }
@@ -1046,5 +1210,6 @@ pub fn all() -> Vec<Fixture> {
         malformed_fixture(),
         null_fixture(),
         streams_fixture(),
+        tcp_analysis_fixture(),
     ]
 }

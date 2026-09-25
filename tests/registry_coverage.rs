@@ -41,7 +41,7 @@ fn every_emitted_field_is_registered_and_every_field_is_emitted() {
     let mut emitted = BTreeSet::new();
     let mut unknown = BTreeSet::new();
     for fx in common::fixtures::all() {
-        let bytes = common::pcapng_with_link(fx.link_type, &fx.frames);
+        let bytes = common::pcapng_fixture(&fx);
         let section = netscope::pcapng::read(&bytes).expect("parse");
         let link = LinkType(i32::from(fx.link_type));
         let mut state = State::new();
