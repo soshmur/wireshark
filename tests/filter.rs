@@ -139,7 +139,7 @@ fn ipv4_filters() {
     expect(&f, "icmp.code == 4", &[8]);
     expect(&f, "icmp.mtu == 1500", &[8]);
     expect(&f, "icmp.gateway == 192.168.1.254", &[10]);
-    // Frame 6 completes the state, so the datagram's UDP header appears
+    // Frame 6 completes the reassembly, so the datagram's UDP header appears
     // there; frames 7-10 carry a quoted UDP header inside an ICMP error.
     expect(&f, "udp", &[6, 7, 8, 9, 10]);
     expect(&f, "udp.srcport == 4000", &[6, 7, 8, 9, 10]);

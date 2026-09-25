@@ -61,6 +61,10 @@ pub fn dissect(data: &[u8], ctx: &mut Ctx) -> Result<()> {
     let tcp = ctx.begin("tcp", start..start);
     ctx.leaf("tcp.srcport", sport_r, Value::Unsigned(u64::from(sport)));
     ctx.leaf("tcp.dstport", dport_r, Value::Unsigned(u64::from(dport)));
+    // A SYN without ACK opens a connection, so it starts a new conversation
+    // even on a 5-tuple seen before.
+    let fresh = flags & 0x002 != 0 && flags & 0x010 == 0;
+    super::stream_id(ctx, "tcp.stream", sport, dport, 6, fresh);
     ctx.leaf("tcp.len", 0..0, Value::Unsigned(payload_len as u64));
     ctx.leaf("tcp.seq", seq_r, Value::Unsigned(u64::from(seq)));
     ctx.leaf("tcp.ack", ack_r, Value::Unsigned(u64::from(ack)));

@@ -1,7 +1,8 @@
 //! Per-frame dissection context. Dissectors are pure functions of their input
 //! slice plus this context; the context owns the tree being built and carries
 //! what crosses layer boundaries: the summary columns, the protocol chain, the
-//! next-layer handoff, extra data sources (reassembly) and reassembly state.
+//! next-layer handoff, extra data sources (reassembly) and the per-worker
+//! state carried between frames.
 
 use std::ops::Range;
 use std::sync::Arc;

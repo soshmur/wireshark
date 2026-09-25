@@ -47,7 +47,7 @@ pub fn dissect(data: &[u8], ctx: &mut Ctx) -> Result<()> {
         let avail = c.remaining();
         let body_len = usize::from(len);
         if body_len > avail {
-            // Record continues in the next segment (state is Phase 4).
+            // Record continues in the next segment (desegmentation is Phase 4).
             ctx.leaf("tls.continuation_data", c.rest_range(), Value::Bytes);
             let text = format!(
                 "{}: {ct_name} Protocol (fragment, {avail} of {body_len} bytes)",

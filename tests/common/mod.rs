@@ -249,6 +249,11 @@ pub fn tcp4(src: [u8; 4], dst: [u8; 4], t: &Tcp, payload: &[u8]) -> Vec<u8> {
     t.build(&pseudo_v4(src, dst, 6, 0), payload)
 }
 
+/// TCP over IPv6 with correct checksum.
+pub fn tcp6(src: [u8; 16], dst: [u8; 16], t: &Tcp, payload: &[u8]) -> Vec<u8> {
+    t.build(&pseudo_v6(src, dst, 6, 0), payload)
+}
+
 pub fn udp_raw(sport: u16, dport: u16, pseudo: &[u8], payload: &[u8]) -> Vec<u8> {
     let len = 8 + payload.len();
     let mut b = Vec::with_capacity(len);

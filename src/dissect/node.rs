@@ -17,7 +17,7 @@ use std::ops::Range;
 use super::registry;
 
 /// Index of the byte buffer a node's `range` refers to.
-/// `0` is always the captured frame; state adds further sources.
+/// `0` is always the captured frame; reassembly adds further sources.
 pub type SourceId = u8;
 
 /// A typed field value. `Bytes` has no payload because the bytes are the

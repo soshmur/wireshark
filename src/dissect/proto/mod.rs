@@ -192,3 +192,26 @@ mod name_list_tests {
         assert_eq!(n.as_str().len(), 96);
     }
 }
+
+/// Look this frame's transport 5-tuple up in the conversation table and
+/// emit `<proto>.stream`.
+///
+/// Returns `None` when there is no network layer to key on, which happens for
+/// a transport header quoted inside an ICMP error that we could not parse, or
+/// for a link type that carries a transport header with no IP above it. Such a
+/// frame simply has no stream.
+pub fn stream_id(
+    ctx: &mut Ctx,
+    field: &'static str,
+    sport: u16,
+    dport: u16,
+    ip_proto: u8,
+    fresh: bool,
+) -> Option<crate::dissect::stream::Lookup> {
+    let addrs = ctx.net_addrs?;
+    let (src, dst) = crate::dissect::stream::endpoints(addrs, sport, dport);
+    let ts = ctx.ts;
+    let look = ctx.state.streams.lookup(src, dst, ip_proto, ts, fresh);
+    ctx.leaf(field, 0..0, Value::Unsigned(u64::from(look.id)));
+    Some(look)
+}

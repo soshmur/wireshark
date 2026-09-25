@@ -664,6 +664,7 @@ pub static FIELDS: &[FieldDef] = &[
     f("icmpv6.data", "Data", Bytes),
     // UDP
     f("udp", "User Datagram Protocol", Protocol),
+    f("udp.stream", "Stream index", Unsigned(Dec)),
     f("udp.srcport", "Source Port", Unsigned(Dec)),
     f("udp.dstport", "Destination Port", Unsigned(Dec)),
     alias(
@@ -682,6 +683,7 @@ pub static FIELDS: &[FieldDef] = &[
     f("udp.payload", "UDP payload", Bytes),
     // TCP
     f("tcp", "Transmission Control Protocol", Protocol),
+    f("tcp.stream", "Stream index", Unsigned(Dec)),
     f("tcp.srcport", "Source Port", Unsigned(Dec)),
     f("tcp.dstport", "Destination Port", Unsigned(Dec)),
     alias(

@@ -46,7 +46,7 @@ fn check(frame: &Frame, context: &str) {
         }
         if let Some((_, parent_range, parent, parent_source)) = stack.last() {
             // Zero-length nodes are generated fields with no bytes of their
-            // own; a child in another data source (state) is unrelated
+            // own; a child in another data source (reassembly) is unrelated
             // to its parent's range.
             if !r.is_empty() && !parent_range.is_empty() && *parent_source == node.source() {
                 assert!(
@@ -88,7 +88,7 @@ fn every_truncation_of_every_fixture_frame_holds() {
     for fx in common::fixtures::all() {
         let link = LinkType(i32::from(fx.link_type));
         for (i, bytes) in fx.frames.iter().enumerate() {
-            // A fresh state per truncation so fragments do not interact.
+            // A fresh State per truncation so fragments do not interact.
             for cut in 0..=bytes.len() {
                 let mut state = State::new();
                 let frame = dissect(link, 1, raw(&bytes[..cut]), &mut state);

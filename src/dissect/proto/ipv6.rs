@@ -80,7 +80,7 @@ pub fn dissect(data: &[u8], ctx: &mut Ctx) -> Result<()> {
     let name = enum_name(IPPROTOS, u64::from(next)).unwrap_or("Unknown");
     let payload_off = pc.abs() - ctx.base;
     if is_fragment {
-        // IPv6 fragment state is not implemented; show the fragment
+        // IPv6 fragment reassembly is not implemented; show the fragment
         // payload as data.
         ctx.set_info(format!("Fragmented IPv6 (proto={name} {next})"));
         ctx.call_next_bounded(Proto::Data, payload_off, pc.remaining());

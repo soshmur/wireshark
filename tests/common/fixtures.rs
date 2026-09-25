@@ -976,6 +976,63 @@ fn null_fixture() -> Fixture {
     }
 }
 
+/// Conversations: two concurrent TCP connections, both directions of each, a
+/// third that reuses the first one's ports after it closes, two UDP flows and
+/// one TCP connection over IPv6.
+fn streams_fixture() -> Fixture {
+    // Direction matters here, so build both ways explicitly rather than via
+    // the `eth_ipv4` helper, which always runs A -> B.
+    let a_to_b =
+        |proto: u8, payload: &[u8]| eth(MAC_B, MAC_A, 0x0800, &ipv4(IP_A, IP_B, proto, payload));
+    let b_to_a =
+        |proto: u8, payload: &[u8]| eth(MAC_A, MAC_B, 0x0800, &ipv4(IP_B, IP_A, proto, payload));
+    let client = |port: u16, flags: u16, payload: &[u8]| {
+        a_to_b(6, &tcp4(IP_A, IP_B, &Tcp::new(port, 80, flags), payload))
+    };
+    let server = |port: u16, flags: u16, payload: &[u8]| {
+        b_to_a(6, &tcp4(IP_B, IP_A, &Tcp::new(80, port, flags), payload))
+    };
+    let v6 = |src: [u8; 16], dst: [u8; 16], dst_mac: [u8; 6], src_mac: [u8; 6], t: &Tcp| {
+        eth(
+            dst_mac,
+            src_mac,
+            0x86dd,
+            &ipv6(src, dst, 6, 64, &tcp6(src, dst, t, &[])),
+        )
+    };
+
+    f(
+        "streams",
+        vec![
+            // Stream 0: opened, used both ways, closed.
+            client(40000, SYN, &[]),                // 1
+            server(40000, SYN | ACK, &[]),          // 2
+            client(40000, ACK, &[]),                // 3
+            client(40000, PSH | ACK, b"one"),       // 4
+            server(40000, PSH | ACK, b"reply one"), // 5
+            // Stream 1: a second connection, interleaved with the first.
+            client(40001, SYN, &[]),          // 6
+            server(40001, SYN | ACK, &[]),    // 7
+            client(40001, PSH | ACK, b"two"), // 8
+            // Stream 0 closes.
+            client(40000, FIN | ACK, &[]), // 9
+            server(40000, FIN | ACK, &[]), // 10
+            // Stream 2: port 40000 reused after the close. Same 5-tuple as
+            // stream 0, but a different connection.
+            client(40000, SYN, &[]),            // 11
+            server(40000, SYN | ACK, &[]),      // 12
+            client(40000, PSH | ACK, b"three"), // 13
+            // Streams 3 and 4: two UDP flows, the first seen both ways.
+            a_to_b(17, &udp4(IP_A, IP_B, 5353, 53, b"q")), // 14
+            b_to_a(17, &udp4(IP_B, IP_A, 53, 5353, b"a")), // 15
+            a_to_b(17, &udp4(IP_A, IP_B, 5354, 53, b"q2")), // 16
+            // Stream 5: TCP over IPv6, both directions.
+            v6(IP6_A, IP6_B, MAC_B, MAC_A, &Tcp::new(40000, 80, SYN)), // 17
+            v6(IP6_B, IP6_A, MAC_A, MAC_B, &Tcp::new(80, 40000, SYN | ACK)), // 18
+        ],
+    )
+}
+
 pub fn all() -> Vec<Fixture> {
     vec![
         link_layer(),
@@ -988,5 +1045,6 @@ pub fn all() -> Vec<Fixture> {
         tls_fixture(),
         malformed_fixture(),
         null_fixture(),
+        streams_fixture(),
     ]
 }

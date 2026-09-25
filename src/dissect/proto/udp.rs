@@ -25,6 +25,8 @@ pub fn dissect(data: &[u8], ctx: &mut Ctx) -> Result<()> {
     let udp = ctx.begin("udp", start..c.abs());
     ctx.leaf("udp.srcport", sport_r, Value::Unsigned(u64::from(sport)));
     ctx.leaf("udp.dstport", dport_r, Value::Unsigned(u64::from(dport)));
+    // UDP has no handshake, so a flow is only ever continued, never reopened.
+    super::stream_id(ctx, "udp.stream", sport, dport, 17, false);
     ctx.leaf("udp.length", len_r, Value::Unsigned(u64::from(len)));
     ctx.leaf(
         "udp.checksum",
