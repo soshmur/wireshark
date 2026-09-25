@@ -9,6 +9,7 @@ use std::sync::Arc;
 
 use netscope_ffi::LinkType;
 
+use super::expert::{Expert, Group, Severity};
 use super::node::{NodeId, SourceId, Tree, TreeBuilder, Value};
 use super::state::State;
 use super::Summary;
@@ -199,8 +200,9 @@ impl<'a> Ctx<'a> {
         value: Value,
         text: &str,
     ) -> NodeId {
-        let id = self.tree.leaf(abbrev, self.source, range, value);
+        let id = self.tree.leaf(abbrev, self.source, range.clone(), value);
         self.tree.set_text(id, text);
+        self.note_malformed(abbrev, range);
         id
     }
 
@@ -221,8 +223,9 @@ impl<'a> Ctx<'a> {
 
     /// Open a container with a free-text label.
     pub fn begin_text(&mut self, abbrev: &'static str, range: Range<usize>, text: &str) -> NodeId {
-        let id = self.tree.begin(abbrev, self.source, range);
+        let id = self.tree.begin(abbrev, self.source, range.clone());
         self.tree.set_text(id, text);
+        self.note_malformed(abbrev, range);
         id
     }
 
@@ -287,8 +290,9 @@ impl<'a> Ctx<'a> {
         value: Value,
         args: std::fmt::Arguments<'_>,
     ) -> NodeId {
-        let id = self.tree.leaf(abbrev, self.source, range, value);
+        let id = self.tree.leaf(abbrev, self.source, range.clone(), value);
         self.tree.set_text_args(id, args);
+        self.note_malformed(abbrev, range);
         id
     }
 
@@ -379,6 +383,76 @@ impl<'a> Ctx<'a> {
 
     pub fn truncate_protocols(&mut self, n: usize) {
         self.protocol_count = self.protocol_count.min(n);
+    }
+
+    /// Every `_ws.malformed` node is an expert Error, without each of the
+    /// nine places that emit one having to remember. Enforcing it here rather
+    /// than at the call sites is the difference between an invariant and a
+    /// convention that drifts - which it had, before this existed.
+    ///
+    /// The specific reason stays in the node's own text; the expert record
+    /// carries a fixed summary so the packet list needs no per-frame string.
+    fn note_malformed(&mut self, abbrev: &'static str, range: Range<usize>) {
+        if abbrev == "_ws.malformed" {
+            self.expert_record(
+                range,
+                Severity::Error,
+                Group::Malformed,
+                "Malformed packet: this layer could not be parsed",
+            );
+        }
+    }
+
+    /// The `_ws.expert` subtree and the frame-level record, with no field of
+    /// its own. Used where the finding *is* the node, such as a malformed
+    /// layer.
+    pub fn expert_record(
+        &mut self,
+        range: Range<usize>,
+        severity: Severity,
+        group: Group,
+        summary: &'static str,
+    ) {
+        let node = self.begin_text("_ws.expert", range, summary);
+        self.leaf(
+            "_ws.expert.severity",
+            0..0,
+            Value::Unsigned(severity as u64),
+        );
+        self.leaf("_ws.expert.group", 0..0, Value::Unsigned(group as u64));
+        self.end();
+        let _ = node;
+        // Keep the worst; ties keep the first, which is the one the dissector
+        // reached earliest and so the most specific to the outer layer.
+        let better = match &self.summary.expert {
+            Some(e) => severity > e.severity,
+            None => true,
+        };
+        if better {
+            self.summary.expert = Some(Expert {
+                severity,
+                group,
+                summary,
+            });
+        }
+    }
+
+    /// Raise an expert finding: a node in the tree, plus the frame-level
+    /// record the packet list reads.
+    ///
+    /// `abbrev` is the finding's own field, so a filter can name the specific
+    /// problem (`tcp.analysis.retransmission`) as well as the generic one
+    /// (`_ws.expert.severity >= "Warning"`).
+    pub fn expert(
+        &mut self,
+        abbrev: &'static str,
+        range: Range<usize>,
+        severity: Severity,
+        group: Group,
+        summary: &'static str,
+    ) {
+        self.leaf_text(abbrev, range.clone(), Value::None, summary);
+        self.expert_record(range, severity, group, summary);
     }
 
     pub fn set_info(&mut self, info: impl Into<String>) {

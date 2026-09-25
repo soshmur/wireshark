@@ -502,10 +502,15 @@ Wireshark ships. With them off the status reports `Unverified` rather than a
 verdict, which is the honest answer: we did not check.
 
 This does not undo the Phase 2 decision that checksums are never used to
-reject a packet. Dissection is unchanged either way — `Options` alters what a
-dissector *reports*, never what it parses, and a test asserts exactly that
-over every fixture frame: same node count, same abbrevs, same ranges, same
-sources, same depths, with only the status values differing.
+reject a packet. `Options` alters what a dissector *reports*, never which
+bytes it parses or how the layers nest, and a test asserts exactly that over
+every fixture frame.
+
+(Amended in Phase 4: that test originally compared whole trees node for node.
+Once a verified-bad checksum began raising an expert finding, the two trees
+legitimately differ — a finding is a node. The comparison now covers every
+node that is not part of an expert record, and separately asserts that no
+checksum finding is raised while validation is off.)
 
 The library default is the opposite of the application default. `dissect()`
 verifies; `netscope` passes `Options::no_checksums()`. A caller who has not

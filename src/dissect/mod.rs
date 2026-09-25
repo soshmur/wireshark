@@ -8,6 +8,7 @@
 
 pub mod ctx;
 pub mod cursor;
+pub mod expert;
 pub mod node;
 pub mod proto;
 pub mod reassembly;
@@ -23,6 +24,7 @@ use netscope_ffi::LinkType;
 use crate::capture::{RawFrame, Timestamp};
 pub use ctx::{Ctx, Options, Proto};
 pub use cursor::DissectError;
+pub use expert::{Expert, Group, Severity};
 pub use node::{NodeId, NodeRef, SourceId, Tree, TreeBuilder, Value};
 pub use reassembly::Reassembly;
 pub use state::State;
@@ -65,6 +67,10 @@ pub struct Summary {
     pub destination: Addr,
     pub protocol: &'static str,
     pub info: String,
+    /// The worst expert finding on this frame, for the Expert column. Kept
+    /// here rather than derived from the tree because the packet list has to
+    /// render a row without walking it.
+    pub expert: Option<Expert>,
 }
 
 impl Summary {

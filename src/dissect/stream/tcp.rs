@@ -17,6 +17,7 @@
 //! reporting every segment after the wrap as a gap.
 
 use crate::capture::Timestamp;
+use crate::dissect::expert::Severity;
 
 use super::Direction;
 
@@ -90,6 +91,19 @@ impl SeqFinding {
             SeqFinding::OutOfOrder => "tcp.analysis.out_of_order",
             SeqFinding::Overlap => "tcp.analysis.overlap",
             SeqFinding::LostSegment => "tcp.analysis.lost_segment",
+        }
+    }
+
+    /// How much attention this deserves. A resend is normal on any real
+    /// network; a gap or an overlap means the capture or the sender is doing
+    /// something that will mislead anyone reading the stream.
+    pub fn severity(self) -> Severity {
+        match self {
+            SeqFinding::Retransmission
+            | SeqFinding::FastRetransmission
+            | SeqFinding::SpuriousRetransmission
+            | SeqFinding::OutOfOrder => Severity::Note,
+            SeqFinding::Overlap | SeqFinding::LostSegment => Severity::Warn,
         }
     }
 

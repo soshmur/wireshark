@@ -32,7 +32,13 @@ pub fn dissect(data: &[u8], ctx: &mut Ctx) -> Result<()> {
     } else {
         CK_BAD
     };
-    ctx.leaf("icmp.checksum.status", checksum_r, Value::Unsigned(status));
+    super::checksum_status(
+        ctx,
+        "icmp.checksum.status",
+        checksum_r,
+        status,
+        "Bad ICMP checksum",
+    );
 
     match ty {
         0 | 8 | 13 | 14 => {

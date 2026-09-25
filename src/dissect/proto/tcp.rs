@@ -5,6 +5,7 @@ use std::fmt::Write as _;
 
 use crate::dissect::ctx::{Ctx, Proto};
 use crate::dissect::cursor::{Cursor, DissectError, Result};
+use crate::dissect::expert::{Group, Severity};
 use crate::dissect::node::Value;
 use crate::dissect::stream::tcp::{Findings, Segment};
 
@@ -102,7 +103,13 @@ pub fn dissect(data: &[u8], ctx: &mut Ctx) -> Result<()> {
             None => CK_UNVERIFIED,
         }
     };
-    ctx.leaf("tcp.checksum.status", checksum_r, Value::Unsigned(status));
+    super::checksum_status(
+        ctx,
+        "tcp.checksum.status",
+        checksum_r,
+        status,
+        "Bad TCP checksum",
+    );
     ctx.leaf("tcp.urgent_pointer", urg_r, Value::Unsigned(u64::from(urg)));
 
     let opts_len = hdr_len - 20;
@@ -334,15 +341,19 @@ fn analysis_nodes(ctx: &mut Ctx, start: usize, f: &Findings) {
         );
     }
     if let Some(s) = f.sequence {
-        ctx.leaf_text(s.abbrev(), 0..0, Value::None, s.summary());
+        ctx.expert(s.abbrev(), 0..0, s.severity(), Group::Sequence, s.summary());
     }
     if let Some(d) = f.duplicate_ack {
-        ctx.leaf_textf(
+        ctx.expert(
             "tcp.analysis.duplicate_ack",
             0..0,
-            Value::None,
-            format_args!("This is a TCP duplicate ack (#{})", d.number),
+            Severity::Note,
+            Group::Sequence,
+            "This is a TCP duplicate ACK",
         );
+        // The run length goes in its own field rather than into the message,
+        // so the summary can stay a `&'static str` and the number stays
+        // comparable: `tcp.analysis.duplicate_ack_num >= 3`.
         ctx.leaf(
             "tcp.analysis.duplicate_ack_num",
             0..0,
@@ -355,34 +366,38 @@ fn analysis_nodes(ctx: &mut Ctx, start: usize, f: &Findings) {
         );
     }
     if f.zero_window {
-        ctx.leaf_text(
+        ctx.expert(
             "tcp.analysis.zero_window",
             0..0,
-            Value::None,
+            Severity::Warn,
+            Group::Sequence,
             "This frame advertises a zero window",
         );
     }
     if f.window_full {
-        ctx.leaf_text(
+        ctx.expert(
             "tcp.analysis.window_full",
             0..0,
-            Value::None,
+            Severity::Note,
+            Group::Sequence,
             "This frame fills the peer's advertised window",
         );
     }
     if f.keep_alive {
-        ctx.leaf_text(
+        ctx.expert(
             "tcp.analysis.keep_alive",
             0..0,
-            Value::None,
+            Severity::Note,
+            Group::Sequence,
             "This frame is a TCP keep-alive",
         );
     }
     if f.ack_lost_segment {
-        ctx.leaf_text(
+        ctx.expert(
             "tcp.analysis.ack_lost_segment",
             0..0,
-            Value::None,
+            Severity::Warn,
+            Group::Sequence,
             "ACK for a segment that was not captured",
         );
     }

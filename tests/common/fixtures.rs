@@ -1075,9 +1075,13 @@ fn streams_fixture() -> Fixture {
             server(40000, SYN | ACK, 7000, 3001, &[]),      // 12
             client(40000, PSH | ACK, 3001, 7001, b"three"), // 13
             // Streams 3 and 4: two UDP flows, the first seen both ways.
-            a_to_b(17, &udp4(IP_A, IP_B, 5353, 53, b"q")), // 14
-            b_to_a(17, &udp4(IP_B, IP_A, 53, 5353, b"a")), // 15
-            a_to_b(17, &udp4(IP_A, IP_B, 5354, 53, b"q2")), // 16
+            // Ports with no dissector behind them, so the payload stays data.
+            // These were 5353 -> 53 carrying one byte, which the DNS
+            // dissector rightly called malformed. This fixture is about
+            // conversation identity; a malformed layer in it is noise.
+            a_to_b(17, &udp4(IP_A, IP_B, 40100, 40101, b"q")), // 14
+            b_to_a(17, &udp4(IP_B, IP_A, 40101, 40100, b"a")), // 15
+            a_to_b(17, &udp4(IP_A, IP_B, 40102, 40101, b"q2")), // 16
             // Stream 5: TCP over IPv6, both directions.
             v6(
                 IP6_A,

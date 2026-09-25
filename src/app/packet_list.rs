@@ -92,6 +92,7 @@ pub fn show(
         .column(Column::initial(150.0).at_least(60.0))
         .column(Column::initial(70.0).at_least(40.0))
         .column(Column::initial(60.0).at_least(40.0))
+        .column(Column::initial(70.0).at_least(40.0))
         .column(Column::remainder().at_least(80.0))
         .sense(egui::Sense::click())
         .min_scrolled_height(0.0);
@@ -108,6 +109,7 @@ pub fn show(
                 "Destination",
                 "Protocol",
                 "Length",
+                "Expert",
                 "Info",
             ] {
                 header.col(|ui| {
@@ -145,6 +147,33 @@ pub fn show(
                 cell(&mut row, tint, frame.summary.destination.to_string());
                 cell(&mut row, tint, frame.summary.protocol_display());
                 cell(&mut row, tint, frame.orig_len.to_string());
+                // The expert cell keeps its severity colour even on a tinted
+                // row: it is the one column whose colour carries meaning of
+                // its own rather than repeating the row's protocol.
+                let expert = frame.summary.expert;
+                row.col(|ui| {
+                    if let Some(c) = tint {
+                        let pad = 0.5 * ui.spacing().item_spacing;
+                        ui.painter().rect_filled(
+                            ui.max_rect().expand2(pad),
+                            egui::Rounding::ZERO,
+                            c.background,
+                        );
+                    }
+                    match expert {
+                        Some(e) => {
+                            let [r, g, b] = e.severity.rgb();
+                            ui.colored_label(egui::Color32::from_rgb(r, g, b), e.severity.name())
+                                .on_hover_text(format!("{}: {}", e.group.name(), e.summary));
+                        }
+                        None => {
+                            if let Some(c) = tint {
+                                ui.style_mut().visuals.override_text_color = Some(c.foreground);
+                            }
+                            ui.label("");
+                        }
+                    }
+                });
                 cell(&mut row, tint, frame.summary.info.as_str());
                 if row.response().clicked() {
                     state.selected = Some(frame.number);

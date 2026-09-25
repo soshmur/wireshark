@@ -215,3 +215,25 @@ pub fn stream_id(
     ctx.leaf(field, 0..0, Value::Unsigned(u64::from(look.id)));
     Some(look)
 }
+
+/// Emit `<proto>.checksum.status` and, when it is bad, the expert finding
+/// that goes with it. Every dissector that verifies a checksum reports it the
+/// same way, so `_ws.expert.group == "Checksum"` finds all of them.
+pub fn checksum_status(
+    ctx: &mut Ctx,
+    field: &'static str,
+    range: std::ops::Range<usize>,
+    status: u64,
+    bad_message: &'static str,
+) {
+    ctx.leaf(field, range.clone(), Value::Unsigned(status));
+    if status == CK_BAD {
+        ctx.expert(
+            "_ws.checksum.bad",
+            range,
+            crate::dissect::expert::Severity::Error,
+            crate::dissect::expert::Group::Checksum,
+            bad_message,
+        );
+    }
+}

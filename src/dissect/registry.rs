@@ -421,6 +421,19 @@ pub static FIELDS: &[FieldDef] = &[
         Enum(LINK_TYPES, Dec),
     ),
     f("frame.protocols", "Protocols in frame", Str),
+    // expert info
+    f("_ws.expert", "Expert Info", Group),
+    f("_ws.checksum.bad", "Bad checksum", Bool),
+    f(
+        "_ws.expert.severity",
+        "Severity level",
+        Enum(crate::dissect::expert::SEVERITIES, Base::Name),
+    ),
+    f(
+        "_ws.expert.group",
+        "Group",
+        Enum(crate::dissect::expert::GROUPS, Base::Name),
+    ),
     // malformed / data
     f("_ws.malformed", "Malformed Packet", Protocol),
     f("data", "Data", Protocol),

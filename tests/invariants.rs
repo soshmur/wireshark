@@ -120,10 +120,14 @@ fn single_byte_corruptions_hold() {
     }
 }
 
-/// Checksum validation is a reporting setting, not a parsing one: turning it
-/// off must change only the `*.checksum.status` values, never the shape of
-/// the tree. `netscope` ships with it off, matching Wireshark, because a NIC
-/// computes the transport checksums after libpcap has seen the packet.
+/// Checksum validation is a reporting setting, not a parsing one.
+///
+/// Turning it off must not change which bytes are parsed or how the layers
+/// nest. It does change what is *reported*: a verified-bad checksum raises an
+/// expert finding, and a finding is a node. So the comparison is over every
+/// node that is not part of an expert record - those must match exactly in
+/// name, range, source and depth - while the expert nodes themselves are
+/// allowed to appear only when validation is on.
 #[test]
 fn checksum_validation_changes_reporting_and_nothing_else() {
     use netscope::dissect::{dissect_with, Options};
@@ -139,6 +143,13 @@ fn checksum_validation_changes_reporting_and_nothing_else() {
     const UNVERIFIED: u64 = 2;
     const NOT_PRESENT: u64 = 3;
 
+    fn is_expert(abbrev: &str) -> bool {
+        matches!(
+            abbrev,
+            "_ws.expert" | "_ws.expert.severity" | "_ws.expert.group" | "_ws.checksum.bad"
+        )
+    }
+
     let mut verified_any = false;
     for fx in common::fixtures::all() {
         let link = LinkType(i32::from(fx.link_type));
@@ -149,19 +160,26 @@ fn checksum_validation_changes_reporting_and_nothing_else() {
             let a = dissect_with(link, n, raw(bytes), &mut on, Options::default());
             let b = dissect_with(link, n, raw(bytes), &mut off, Options::no_checksums());
 
-            // Same shape: same nodes, same ranges, same sources.
-            assert_eq!(
-                a.tree.len(),
-                b.tree.len(),
-                "{}#{n}: node count changed",
+            // Everything that is not an expert record must be identical.
+            let shape = |t: &netscope::dissect::Tree| {
+                t.iter()
+                    .filter(|node| !is_expert(node.abbrev()))
+                    .map(|node| (node.abbrev(), node.range(), node.source(), node.depth()))
+                    .collect::<Vec<_>>()
+            };
+            let (sa, sb) = (shape(&a.tree), shape(&b.tree));
+            assert_eq!(sa.len(), sb.len(), "{}#{n}: node count changed", fx.name);
+            for (x, y) in sa.iter().zip(&sb) {
+                assert_eq!(x, y, "{}#{n}: node differs", fx.name);
+            }
+            // With validation off there is nothing for a checksum to report.
+            assert!(
+                !b.tree
+                    .iter()
+                    .any(|node| node.abbrev() == "_ws.checksum.bad"),
+                "{}#{n}: checksum finding raised with validation off",
                 fx.name
             );
-            for (x, y) in a.tree.iter().zip(b.tree.iter()) {
-                assert_eq!(x.abbrev(), y.abbrev(), "{}#{n}", fx.name);
-                assert_eq!(x.range(), y.range(), "{}#{n}: {}", fx.name, x.abbrev());
-                assert_eq!(x.source(), y.source(), "{}#{n}: {}", fx.name, x.abbrev());
-                assert_eq!(x.depth(), y.depth(), "{}#{n}: {}", fx.name, x.abbrev());
-            }
 
             // With validation off, no status is ever Good or Bad.
             for node in b.tree.iter() {

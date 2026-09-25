@@ -48,7 +48,13 @@ pub fn dissect(data: &[u8], ctx: &mut Ctx) -> Result<()> {
             None => CK_UNVERIFIED,
         }
     };
-    ctx.leaf("udp.checksum.status", checksum_r, Value::Unsigned(status));
+    super::checksum_status(
+        ctx,
+        "udp.checksum.status",
+        checksum_r,
+        status,
+        "Bad UDP checksum",
+    );
     ctx.end();
     let _ = udp;
 

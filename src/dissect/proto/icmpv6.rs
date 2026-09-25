@@ -33,10 +33,12 @@ pub fn dissect(data: &[u8], ctx: &mut Ctx) -> Result<()> {
             None => CK_UNVERIFIED,
         }
     };
-    ctx.leaf(
+    super::checksum_status(
+        ctx,
         "icmpv6.checksum.status",
         checksum_r,
-        Value::Unsigned(status),
+        status,
+        "Bad ICMPv6 checksum",
     );
 
     match ty {

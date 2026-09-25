@@ -283,6 +283,9 @@ expression: text
     [SEQ/ACK analysis]  [tcp.analysis 0:34-34]
       Bytes in flight: 10  [tcp.analysis.bytes_in_flight 0:0-0]
       This frame is a (suspected) retransmission  [tcp.analysis.retransmission 0:0-0]
+      This frame is a (suspected) retransmission  [_ws.expert 0:0-0]
+        Severity level: Note  [_ws.expert.severity 0:0-0]
+        Group: Sequence  [_ws.expert.group 0:0-0]
   Hypertext Transfer Protocol (continuation)  [http 0:54-64]
     File Data: 30313233343536373839  [http.file_data 0:54-64]
 
@@ -397,6 +400,9 @@ expression: text
     Urgent Pointer: 0  [tcp.urgent_pointer 0:52-54]
     [SEQ/ACK analysis]  [tcp.analysis 0:34-34]
       This frame is a (suspected) spurious retransmission  [tcp.analysis.spurious_retransmission 0:0-0]
+      This frame is a (suspected) spurious retransmission  [_ws.expert 0:0-0]
+        Severity level: Note  [_ws.expert.severity 0:0-0]
+        Group: Sequence  [_ws.expert.group 0:0-0]
   Hypertext Transfer Protocol (continuation)  [http 0:54-64]
     File Data: 30313233343536373839  [http.file_data 0:54-64]
 
@@ -457,6 +463,9 @@ expression: text
     [SEQ/ACK analysis]  [tcp.analysis 0:34-34]
       Bytes in flight: 20  [tcp.analysis.bytes_in_flight 0:0-0]
       Previous segment(s) not captured (common at capture start)  [tcp.analysis.lost_segment 0:0-0]
+      Previous segment(s) not captured (common at capture start)  [_ws.expert 0:0-0]
+        Severity level: Warning  [_ws.expert.severity 0:0-0]
+        Group: Sequence  [_ws.expert.group 0:0-0]
   Hypertext Transfer Protocol (continuation)  [http 0:54-64]
     File Data: 30313233343536373839  [http.file_data 0:54-64]
 
@@ -517,6 +526,9 @@ expression: text
     [SEQ/ACK analysis]  [tcp.analysis 0:34-34]
       Bytes in flight: 20  [tcp.analysis.bytes_in_flight 0:0-0]
       This frame is a (suspected) out-of-order segment  [tcp.analysis.out_of_order 0:0-0]
+      This frame is a (suspected) out-of-order segment  [_ws.expert 0:0-0]
+        Severity level: Note  [_ws.expert.severity 0:0-0]
+        Group: Sequence  [_ws.expert.group 0:0-0]
   Hypertext Transfer Protocol (continuation)  [http 0:54-64]
     File Data: 30313233343536373839  [http.file_data 0:54-64]
 
@@ -577,6 +589,9 @@ expression: text
     [SEQ/ACK analysis]  [tcp.analysis 0:34-34]
       Bytes in flight: 40  [tcp.analysis.bytes_in_flight 0:0-0]
       Previous segment(s) not captured (common at capture start)  [tcp.analysis.lost_segment 0:0-0]
+      Previous segment(s) not captured (common at capture start)  [_ws.expert 0:0-0]
+        Severity level: Warning  [_ws.expert.severity 0:0-0]
+        Group: Sequence  [_ws.expert.group 0:0-0]
   Hypertext Transfer Protocol (continuation)  [http 0:54-64]
     File Data: 30313233343536373839  [http.file_data 0:54-64]
 
@@ -690,7 +705,10 @@ expression: text
     Checksum Status: Good  [tcp.checksum.status 0:50-52]
     Urgent Pointer: 0  [tcp.urgent_pointer 0:52-54]
     [SEQ/ACK analysis]  [tcp.analysis 0:34-34]
-      This is a TCP duplicate ack (#1)  [tcp.analysis.duplicate_ack 0:0-0]
+      This is a TCP duplicate ACK  [tcp.analysis.duplicate_ack 0:0-0]
+      This is a TCP duplicate ACK  [_ws.expert 0:0-0]
+        Severity level: Note  [_ws.expert.severity 0:0-0]
+        Group: Sequence  [_ws.expert.group 0:0-0]
       Duplicate ACK number: 1  [tcp.analysis.duplicate_ack_num 0:0-0]
       Duplicate to the ACK in frame: 11  [tcp.analysis.duplicate_ack_frame 0:0-0]
 
@@ -749,7 +767,10 @@ expression: text
     Checksum Status: Good  [tcp.checksum.status 0:50-52]
     Urgent Pointer: 0  [tcp.urgent_pointer 0:52-54]
     [SEQ/ACK analysis]  [tcp.analysis 0:34-34]
-      This is a TCP duplicate ack (#2)  [tcp.analysis.duplicate_ack 0:0-0]
+      This is a TCP duplicate ACK  [tcp.analysis.duplicate_ack 0:0-0]
+      This is a TCP duplicate ACK  [_ws.expert 0:0-0]
+        Severity level: Note  [_ws.expert.severity 0:0-0]
+        Group: Sequence  [_ws.expert.group 0:0-0]
       Duplicate ACK number: 2  [tcp.analysis.duplicate_ack_num 0:0-0]
       Duplicate to the ACK in frame: 11  [tcp.analysis.duplicate_ack_frame 0:0-0]
 
@@ -808,7 +829,10 @@ expression: text
     Checksum Status: Good  [tcp.checksum.status 0:50-52]
     Urgent Pointer: 0  [tcp.urgent_pointer 0:52-54]
     [SEQ/ACK analysis]  [tcp.analysis 0:34-34]
-      This is a TCP duplicate ack (#3)  [tcp.analysis.duplicate_ack 0:0-0]
+      This is a TCP duplicate ACK  [tcp.analysis.duplicate_ack 0:0-0]
+      This is a TCP duplicate ACK  [_ws.expert 0:0-0]
+        Severity level: Note  [_ws.expert.severity 0:0-0]
+        Group: Sequence  [_ws.expert.group 0:0-0]
       Duplicate ACK number: 3  [tcp.analysis.duplicate_ack_num 0:0-0]
       Duplicate to the ACK in frame: 11  [tcp.analysis.duplicate_ack_frame 0:0-0]
 
@@ -869,6 +893,9 @@ expression: text
     [SEQ/ACK analysis]  [tcp.analysis 0:34-34]
       Bytes in flight: 20  [tcp.analysis.bytes_in_flight 0:0-0]
       This frame is a (suspected) fast retransmission  [tcp.analysis.fast_retransmission 0:0-0]
+      This frame is a (suspected) fast retransmission  [_ws.expert 0:0-0]
+        Severity level: Note  [_ws.expert.severity 0:0-0]
+        Group: Sequence  [_ws.expert.group 0:0-0]
   Hypertext Transfer Protocol (continuation)  [http 0:54-64]
     File Data: 30313233343536373839  [http.file_data 0:54-64]
 
@@ -929,6 +956,9 @@ expression: text
     [SEQ/ACK analysis]  [tcp.analysis 0:34-34]
       Bytes in flight: 25  [tcp.analysis.bytes_in_flight 0:0-0]
       This frame overlaps bytes already seen  [tcp.analysis.overlap 0:0-0]
+      This frame overlaps bytes already seen  [_ws.expert 0:0-0]
+        Severity level: Warning  [_ws.expert.severity 0:0-0]
+        Group: Sequence  [_ws.expert.group 0:0-0]
   Hypertext Transfer Protocol (continuation)  [http 0:54-64]
     File Data: 30313233343536373839  [http.file_data 0:54-64]
 
@@ -988,6 +1018,9 @@ expression: text
     Urgent Pointer: 0  [tcp.urgent_pointer 0:52-54]
     [SEQ/ACK analysis]  [tcp.analysis 0:34-34]
       This frame advertises a zero window  [tcp.analysis.zero_window 0:0-0]
+      This frame advertises a zero window  [_ws.expert 0:0-0]
+        Severity level: Warning  [_ws.expert.severity 0:0-0]
+        Group: Sequence  [_ws.expert.group 0:0-0]
 
 #18 192.168.1.10 -> 93.184.216.34 http | Continuation
   Frame 18: 55 bytes on wire, 55 bytes captured  [frame 0:0-55]
@@ -1045,6 +1078,9 @@ expression: text
     Urgent Pointer: 0  [tcp.urgent_pointer 0:52-54]
     [SEQ/ACK analysis]  [tcp.analysis 0:34-34]
       This frame is a TCP keep-alive  [tcp.analysis.keep_alive 0:0-0]
+      This frame is a TCP keep-alive  [_ws.expert 0:0-0]
+        Severity level: Note  [_ws.expert.severity 0:0-0]
+        Group: Sequence  [_ws.expert.group 0:0-0]
   Hypertext Transfer Protocol (continuation)  [http 0:54-55]
     File Data: 78  [http.file_data 0:54-55]
 
@@ -1160,6 +1196,9 @@ expression: text
     [SEQ/ACK analysis]  [tcp.analysis 0:34-34]
       Bytes in flight: 10  [tcp.analysis.bytes_in_flight 0:0-0]
       This frame fills the peer's advertised window  [tcp.analysis.window_full 0:0-0]
+      This frame fills the peer's advertised window  [_ws.expert 0:0-0]
+        Severity level: Note  [_ws.expert.severity 0:0-0]
+        Group: Sequence  [_ws.expert.group 0:0-0]
   Hypertext Transfer Protocol (continuation)  [http 0:54-64]
     File Data: 30313233343536373839  [http.file_data 0:54-64]
 
@@ -1219,6 +1258,9 @@ expression: text
     Urgent Pointer: 0  [tcp.urgent_pointer 0:52-54]
     [SEQ/ACK analysis]  [tcp.analysis 0:34-34]
       ACK for a segment that was not captured  [tcp.analysis.ack_lost_segment 0:0-0]
+      ACK for a segment that was not captured  [_ws.expert 0:0-0]
+        Severity level: Warning  [_ws.expert.severity 0:0-0]
+        Group: Sequence  [_ws.expert.group 0:0-0]
 
 #22 192.168.1.10 -> 93.184.216.34 tcp | 40000 → 80 [FIN, ACK] Seq=1066 Ack=5001 Win=8192 Len=0
   Frame 22: 54 bytes on wire, 54 bytes captured  [frame 0:0-54]

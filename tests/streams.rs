@@ -269,3 +269,109 @@ fn no_other_fixture_produces_analysis_findings() {
     }
     assert!(noise.is_empty(), "fixtures are not clean:\n{noise:#?}");
 }
+
+/// Expert info: the severity and group attached to each finding, and the
+/// worst-of summary the packet list renders.
+mod expert {
+    use super::{expect, load};
+    use netscope::dissect::Severity;
+
+    #[test]
+    fn findings_carry_a_severity_and_a_group() {
+        let f = load("tcp_analysis");
+        // A resend is normal on any real network.
+        expect(
+            &f,
+            "tcp.analysis.retransmission && _ws.expert.severity == \"Note\"",
+            &[5],
+        );
+        // A gap or an overlap misleads anyone reading the stream.
+        expect(
+            &f,
+            "tcp.analysis.lost_segment && _ws.expert.severity == \"Warning\"",
+            &[8, 10],
+        );
+        expect(
+            &f,
+            "tcp.analysis.overlap && _ws.expert.severity == \"Warning\"",
+            &[16],
+        );
+        // Everything the analyser raises is in the Sequence group.
+        expect(&f, "_ws.expert && _ws.expert.group != \"Sequence\"", &[]);
+    }
+
+    #[test]
+    fn severity_is_comparable_so_a_filter_can_rank_frames() {
+        // The point of an ordered severity: one filter finds everything worth
+        // looking at, without naming each finding.
+        let f = load("tcp_analysis");
+        expect(
+            &f,
+            "_ws.expert.severity >= \"Warning\"",
+            &[8, 10, 16, 17, 21],
+        );
+    }
+
+    #[test]
+    fn a_bad_checksum_is_an_error_in_the_checksum_group() {
+        // The ipv4 fixture's third frame has a deliberately wrong header
+        // checksum. Validation is on by default in the library.
+        let f = load("ipv4");
+        expect(&f, "_ws.checksum.bad", &[3]);
+        expect(
+            &f,
+            "_ws.checksum.bad && _ws.expert.severity == \"Error\" \
+             && _ws.expert.group == \"Checksum\"",
+            &[3],
+        );
+    }
+
+    #[test]
+    fn a_malformed_frame_is_an_error_in_the_malformed_group() {
+        let f = load("malformed");
+        let malformed: Vec<u32> = f
+            .iter()
+            .filter(|fr| fr.tree.find("_ws.malformed").next().is_some())
+            .map(|fr| fr.number)
+            .collect();
+        assert!(!malformed.is_empty(), "the fixture should have some");
+        expect(&f, "_ws.malformed", &malformed);
+        expect(
+            &f,
+            "_ws.malformed && _ws.expert.group == \"Malformed\"",
+            &malformed,
+        );
+    }
+
+    #[test]
+    fn the_summary_keeps_the_worst_finding() {
+        let f = load("tcp_analysis");
+        for frame in &f {
+            let worst = frame
+                .tree
+                .find("_ws.expert.severity")
+                .filter_map(|n| n.unsigned())
+                .map(Severity::from_u64)
+                .max();
+            assert_eq!(
+                frame.summary.expert.map(|e| e.severity),
+                worst,
+                "frame {} summary disagrees with its tree",
+                frame.number
+            );
+        }
+    }
+
+    #[test]
+    fn a_clean_frame_has_no_expert_summary() {
+        let f = load("streams");
+        for frame in &f {
+            assert!(
+                frame.summary.expert.is_none(),
+                "frame {} of an ordinary capture has an expert finding: {:?}",
+                frame.number,
+                frame.summary.expert
+            );
+        }
+    }
+}

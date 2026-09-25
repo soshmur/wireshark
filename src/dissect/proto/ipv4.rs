@@ -127,7 +127,13 @@ pub fn dissect(data: &[u8], ctx: &mut Ctx) -> Result<()> {
         checksum_r.clone(),
         Value::Unsigned(u64::from(checksum)),
     );
-    ctx.leaf("ip.checksum.status", checksum_r, Value::Unsigned(status));
+    super::checksum_status(
+        ctx,
+        "ip.checksum.status",
+        checksum_r,
+        status,
+        "Bad IPv4 header checksum",
+    );
     ctx.leaf("ip.src", src_r, Value::Ipv4(src));
     ctx.leaf("ip.dst", dst_r, Value::Ipv4(dst));
 
