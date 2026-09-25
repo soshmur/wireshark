@@ -139,3 +139,10 @@ path = "fuzz_targets/filter_eval.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "tcp_stream"
+path = "fuzz_targets/tcp_stream.rs"
+test = false
+doc = false
+bench = false

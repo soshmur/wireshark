@@ -39,6 +39,24 @@ const FILTERS: &[&str] = &[
     "dns.qry.name contains \".\"",
     "tcp contains \"HTTP\"",
     "_ws.malformed",
+    // Phase 4 surface.
+    "tcp.analysis.retransmission",
+    "tcp.analysis.out_of_order",
+    "tcp.analysis.lost_segment",
+    "tcp.analysis.duplicate_ack",
+    "tcp.analysis.zero_window",
+    "tcp.analysis.window_full",
+    "tcp.analysis.keep_alive",
+    // Keep-alives are common on real traffic - long-lived push connections
+    // send them every few seconds - so a large count is not by itself a
+    // false positive. These two say whether the heuristic discriminates: if
+    // every one-byte segment were being called a keep-alive, the second
+    // would be zero.
+    "tcp.len == 1",
+    "tcp.len == 1 && !tcp.analysis.keep_alive",
+    "http.segment",
+    "tls.segment",
+    "_ws.expert.severity >= \"Warning\"",
     // Checksum offload: the NIC fills these in after libpcap has seen the
     // packet, so locally originated frames look wrong. Split by direction to
     // show that is what is happening.
@@ -116,6 +134,64 @@ fn main() {
                 println!("{f:<52} {n:>8}");
             }
             Err(e) => println!("{f:<52}  does not compile: {e}"),
+        }
+    }
+
+    // Triage: set NETSCOPE_EXPLAIN to a filter and the first few matching
+    // frames are printed field by field. A count alone cannot tell a real
+    // finding from a heuristic that is firing too often.
+    if let Ok(filter) = std::env::var("NETSCOPE_EXPLAIN") {
+        match compile(&filter) {
+            Ok(test) => {
+                println!("\nexplaining `{filter}`:");
+                for frame in snapshot.iter().filter(|f| matches(&test, f)).take(4) {
+                    println!("  frame {} — {}", frame.number, frame.summary.info);
+                    for node in frame.tree.iter() {
+                        if node.abbrev().starts_with("tcp.") || node.abbrev() == "tcp" {
+                            let data = frame.source(node.source()).unwrap_or(&[]);
+                            println!(
+                                "    {:indent$}{}",
+                                "",
+                                netscope::dissect::registry::label(&node, data),
+                                indent = usize::from(node.depth()) * 2
+                            );
+                        }
+                    }
+                }
+            }
+            Err(e) => println!("\nNETSCOPE_EXPLAIN does not compile: {e}"),
+        }
+    }
+
+    // Conversations, and the busiest stream followed end to end. Both are
+    // rebuilt from the store, so this also checks they agree with it.
+    use netscope::store::conversations::{conversations, Kind};
+    let tcp = conversations(&snapshot, Kind::Tcp);
+    println!(
+        "\nconversations: {} TCP, {} UDP, {} IP, {} Ethernet",
+        tcp.len(),
+        conversations(&snapshot, Kind::Udp).len(),
+        conversations(&snapshot, Kind::Ip).len(),
+        conversations(&snapshot, Kind::Ethernet).len()
+    );
+    if let Some(busiest) = tcp.first() {
+        println!(
+            "  busiest TCP: {} <-> {}, {} packets, {} bytes, {:.3} s",
+            busiest.a,
+            busiest.b,
+            busiest.total_packets(),
+            busiest.total_bytes(),
+            busiest.duration()
+        );
+        if let Some(id) = busiest.stream {
+            let s = netscope::store::follow::follow(&snapshot, id);
+            println!(
+                "  followed stream {id}: {} out, {} in, {} missing, {} runs",
+                s.bytes[0],
+                s.bytes[1],
+                s.missing,
+                s.chunks.len()
+            );
         }
     }
 
