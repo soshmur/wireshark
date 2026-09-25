@@ -1274,6 +1274,65 @@ fn desegment_fixture() -> Fixture {
     f("desegment", frames)
 }
 
+/// A TLS handshake whose records do not fit in one segment.
+///
+/// A real ClientHello with a certificate chain behind it routinely spans
+/// several segments; before desegmentation the SNI in a split ClientHello was
+/// simply unreadable, and the frame showed a fragment with no fields.
+fn tls_desegment_fixture() -> Fixture {
+    let mut flow = Flow::new(53000, 443, 1, 1);
+    let client = |flow: &mut Flow, payload: &[u8]| {
+        let t = flow.client(PSH | ACK, payload);
+        eth(
+            MAC_B,
+            MAC_A,
+            0x0800,
+            &ipv4(IP_A, IP_B, 6, &tcp4(IP_A, IP_B, &t, payload)),
+        )
+    };
+    let server = |flow: &mut Flow, payload: &[u8]| {
+        let t = flow.server(PSH | ACK, payload);
+        eth(
+            MAC_A,
+            MAC_B,
+            0x0800,
+            &ipv4(IP_B, IP_A, 6, &tcp4(IP_B, IP_A, &t, payload)),
+        )
+    };
+
+    let ch = tls_client_hello(
+        0x0303,
+        &[0x5a; 32],
+        &[0x1301, 0x1302, 0xc02f],
+        &[tls_sni("split.example.com"), tls_alpn(&["h2"])],
+    );
+    let ch_rec = tls_record(22, 0x0301, &ch);
+    // Split the ClientHello three ways, the first cut inside the five-byte
+    // record header so the header itself has to be held.
+    let a = &ch_rec[..3];
+    let b = &ch_rec[3..40];
+    let c = &ch_rec[40..];
+
+    let sh = tls_server_hello(0x0303, 0x1301, &[tls_ext(43, &[0x03, 0x04])]);
+    let sh_rec = tls_record(22, 0x0303, &sh);
+    let app = tls_record(23, 0x0303, &[0x99; 64]);
+    // One segment carrying a whole ServerHello and the start of the next
+    // record: the complete one must be dissected now, the partial one held.
+    let mut mixed = sh_rec.clone();
+    mixed.extend_from_slice(&app[..10]);
+
+    f(
+        "tls_desegment",
+        vec![
+            client(&mut flow, a),          // 1: three bytes of a record header
+            client(&mut flow, b),          // 2: still incomplete
+            client(&mut flow, c),          // 3: completes the ClientHello
+            server(&mut flow, &mixed),     // 4: one whole record and a partial
+            server(&mut flow, &app[10..]), // 5: completes the partial one
+        ],
+    )
+}
+
 pub fn all() -> Vec<Fixture> {
     vec![
         link_layer(),
@@ -1289,5 +1348,6 @@ pub fn all() -> Vec<Fixture> {
         streams_fixture(),
         tcp_analysis_fixture(),
         desegment_fixture(),
+        tls_desegment_fixture(),
     ]
 }

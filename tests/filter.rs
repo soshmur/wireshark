@@ -282,7 +282,12 @@ fn dhcp_http_and_tls_filters() {
     expect(&h, "tcp.port == 8081", &[3]);
 
     let t = load("tls");
-    expect(&t, "tls", &[1, 2, 3, 4, 5, 6]);
+    // Frame 5 carries a record whose header claims 1,000 bytes with 30
+    // present, and nothing later in that direction completes it. Since
+    // desegmentation it is held rather than shown as a fragment, so the
+    // frame contains no TLS record - only the promise of one.
+    expect(&t, "tls", &[1, 2, 3, 4, 6]);
+    expect(&t, "tls.segment", &[5]);
     expect(&t, "tls.handshake.type == 1", &[1]);
     expect(&t, "tls.handshake.type == 2", &[2]);
     expect(
@@ -302,7 +307,9 @@ fn dhcp_http_and_tls_filters() {
     expect(&t, "tls.record.version == 0x0301", &[1]);
     expect(&t, "tls.handshake.extensions_alpn_str == \"h2\"", &[1]);
     expect(&t, "tls.app_data", &[2]);
-    expect(&t, "tls.continuation_data", &[5, 6]);
+    // Frame 5's fragment is held now, so only frame 6's non-TLS bytes on
+    // port 443 remain as continuation data.
+    expect(&t, "tls.continuation_data", &[6]);
 }
 
 #[test]

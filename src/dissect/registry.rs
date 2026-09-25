@@ -1087,6 +1087,8 @@ pub static FIELDS: &[FieldDef] = &[
     f("tls.app_data", "Encrypted Application Data", Bytes),
     f("tls.handshake.encrypted", "Encrypted handshake data", Bytes),
     f("tls.continuation_data", "Continuation Data", Bytes),
+    f("tls.segment", "Reassembled segment", Group),
+    f("tls.segment.len", "Segment length", Unsigned(Dec)),
 ];
 
 // ---- lookup ----------------------------------------------------------------

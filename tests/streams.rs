@@ -476,3 +476,69 @@ mod desegment {
         expect(&f, "http.segment", &[]);
     }
 }
+
+/// TLS records split across segments.
+mod tls_desegment {
+    use super::{expect, load};
+
+    #[test]
+    fn a_split_client_hello_is_parsed_once_whole() {
+        let f = load("tls_desegment");
+        // Frame 1 carries three bytes - not even a whole record header.
+        // Frame 2 carries more of the same record. Frame 3 completes it.
+        expect(&f, "tls.segment", &[1, 2, 4]);
+        expect(&f, "tls", &[3, 4, 5]);
+        // The SNI is the point: before desegmentation a ClientHello split
+        // across segments showed a fragment with no fields at all.
+        expect(
+            &f,
+            "tls.handshake.extensions_server_name == \"split.example.com\"",
+            &[3],
+        );
+    }
+
+    #[test]
+    fn a_frame_holding_only_a_fragment_stays_tcp() {
+        let f = load("tls_desegment");
+        for n in [1u32, 2] {
+            let frame = f.iter().find(|fr| fr.number == n).expect("frame");
+            assert_eq!(frame.summary.protocol, "tcp");
+            assert_eq!(frame.summary.info, "[TCP segment of a reassembled PDU]");
+        }
+    }
+
+    #[test]
+    fn a_complete_record_and_a_partial_one_can_share_a_segment() {
+        // Frame 4 carries a whole ServerHello followed by the first ten
+        // bytes of the next record. The complete one must be dissected now
+        // and the partial one held, not one or the other.
+        let f = load("tls_desegment");
+        expect(&f, "tls.handshake.type == 2", &[4]);
+        expect(&f, "tls.segment && tls.record", &[4]);
+        let frame = f.iter().find(|fr| fr.number == 4).expect("frame 4");
+        assert_eq!(frame.summary.protocol, "tls");
+        assert!(
+            frame.summary.info.starts_with("Server Hello"),
+            "info was {:?}",
+            frame.summary.info
+        );
+    }
+
+    #[test]
+    fn the_reassembled_record_lives_in_its_own_data_source() {
+        let f = load("tls_desegment");
+        let frame = f.iter().find(|fr| fr.number == 3).expect("frame 3");
+        let sni = frame
+            .tree
+            .find("tls.handshake.extensions_server_name")
+            .next()
+            .expect("the SNI node");
+        assert_ne!(
+            sni.source(),
+            0,
+            "the name spans segments, so it cannot be in the captured frame"
+        );
+        let source = frame.source(sni.source()).expect("its data source");
+        assert_eq!(&source[sni.range()], b"split.example.com");
+    }
+}

@@ -21,11 +21,77 @@ fn version_name(v: u16) -> String {
         .unwrap_or_else(|| format!("0x{v:04x}"))
 }
 
-pub fn dissect(data: &[u8], ctx: &mut Ctx) -> Result<()> {
+/// Could these bytes be the start of a record, even one whose five-byte
+/// header has not fully arrived?
+fn starts_record(data: &[u8]) -> bool {
+    match data {
+        [] => false,
+        [ct] => (20..=24).contains(ct),
+        [ct, major] => (20..=24).contains(ct) && *major == 3,
+        _ => looks_like_tls(data),
+    }
+}
+
+/// Length of the leading run of complete records.
+///
+/// Pure, and run before anything is written to the tree: a record that turns
+/// out to be incomplete has to be held whole, and undoing nodes already
+/// emitted for its header is not something the builder supports.
+fn complete_prefix(data: &[u8]) -> usize {
+    let mut at = 0usize;
+    loop {
+        let Some(rest) = data.get(at..) else {
+            return at;
+        };
+        if rest.len() < 5 || !looks_like_tls(rest) {
+            return at;
+        }
+        let (Some(hi), Some(lo)) = (rest.get(3), rest.get(4)) else {
+            return at;
+        };
+        let body = usize::from(u16::from_be_bytes([*hi, *lo]));
+        let Some(end) = at.checked_add(5).and_then(|n| n.checked_add(body)) else {
+            return at;
+        };
+        if end > data.len() {
+            return at;
+        }
+        at = end;
+    }
+}
+
+pub fn dissect(whole: &[u8], ctx: &mut Ctx) -> Result<()> {
+    // Split off a trailing incomplete record and wait for the rest of it,
+    // so a ClientHello spanning two segments is parsed rather than shown as
+    // a fragment with no fields.
+    let prefix = complete_prefix(whole);
+    let tail = whole.get(prefix..).unwrap_or(&[]);
+    let held = !tail.is_empty() && starts_record(tail) && ctx.hold(tail);
+    let data = if held {
+        whole.get(..prefix).unwrap_or(whole)
+    } else {
+        whole
+    };
+
+    if data.is_empty() {
+        // Nothing complete in this frame: it carries part of a record that
+        // finishes later. It stays a TCP frame, as Wireshark shows it.
+        segment_node(ctx, prefix, whole.len());
+        ctx.set_info("[TCP segment of a reassembled PDU]");
+        return Ok(());
+    }
+
     let mut c = Cursor::new(data, ctx.base, ctx.source);
     let start = c.abs();
     ctx.set_protocol("tls");
-    let tls = ctx.begin_text("tls", start..start + data.len(), "Transport Layer Security");
+    // The layer covers every byte it was handed, including a trailing
+    // record that finishes in a later frame: the `tls.segment` child below
+    // accounts for those, and a child may not escape its parent's range.
+    let tls = ctx.begin_text(
+        "tls",
+        start..start + whole.len(),
+        "Transport Layer Security",
+    );
     let mut infos: Vec<String> = Vec::new();
     let mut records = 0;
     // Bytes that do not start with a plausible record header are the tail of
@@ -110,10 +176,27 @@ pub fn dissect(data: &[u8], ctx: &mut Ctx) -> Result<()> {
             infos.push("Continuation Data".into());
         }
     }
+    if held {
+        segment_node(ctx, prefix, whole.len());
+        infos.push("[TCP segment of a reassembled PDU]".into());
+    }
     ctx.set_info(infos.join(", "));
     ctx.end();
     let _ = tls;
     Ok(())
+}
+
+/// Marks the bytes handed to the next frame.
+fn segment_node(ctx: &mut Ctx, from: usize, to: usize) {
+    let base = ctx.base;
+    let node = ctx.begin_text(
+        "tls.segment",
+        base + from..base + to,
+        "[TCP segment of a reassembled PDU]",
+    );
+    ctx.leaf("tls.segment.len", 0..0, Value::Unsigned((to - from) as u64));
+    ctx.end();
+    let _ = node;
 }
 
 fn alert(c: &mut Cursor, ctx: &mut Ctx) -> Result<String> {
