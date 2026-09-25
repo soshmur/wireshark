@@ -18,7 +18,7 @@ native binary with an immediate-mode UI.
 | 1 | Packet list, hex/ASCII pane, ring buffer, BPF capture filter | done |
 | 2 | Dissectors: Ethernet … TLS, IPv4 reassembly, detail tree, fuzz targets | done |
 | 3 | Display filter language, filter bar, colour rules, find | done |
-| 4 | Conversations, TCP/UDP reassembly, Follow Stream, expert info | — |
+| 4 | Conversations, TCP analysis, desegmentation, Follow Stream, expert info | done |
 | 5 | pcap/pcapng I/O, statistics | — |
 
 Dissection runs at 538-559k frames/s on one core for the Ethernet/IPv4/TCP
@@ -82,6 +82,67 @@ captured — see below.
 
 The status bar shows frames held, evictions, memory, capture rate, drops at
 each stage (channel / driver / interface) and the UI frame time.
+
+
+## Conversations and streams
+
+Every TCP and UDP frame carries a conversation id, so `tcp.stream == 3`
+selects one connection. Ids are handed out in first-seen order and never
+reused, and a SYN on a five-tuple that has been seen before starts a *new*
+conversation - ports get reused, and two connections between the same pair
+are two conversations.
+
+### Sequence analysis
+
+Each segment is classified as it arrives, and the result is both a field and
+an expert finding, so it is filterable either specifically or by severity:
+
+```
+tcp.analysis.retransmission          tcp.analysis.out_of_order
+tcp.analysis.fast_retransmission     tcp.analysis.overlap
+tcp.analysis.spurious_retransmission tcp.analysis.lost_segment
+tcp.analysis.duplicate_ack_num >= 3  tcp.analysis.zero_window
+tcp.analysis.window_full             tcp.analysis.keep_alive
+_ws.expert.severity >= "Warning"     _ws.expert.group == "Sequence"
+```
+
+These are heuristics over *what was captured*, not claims about what the
+endpoints did. "Previous segment not captured" usually means the capture has
+a hole, not that the network lost anything.
+
+### Desegmentation
+
+HTTP and TLS see whole messages. A response whose headers arrive in one
+segment and whose body arrives in two more is dissected once, on the frame
+that completes it, with the joined bytes as their own data source - so the
+detail tree's ranges point into the reassembled buffer and the hex pane shows
+it as a separate tab. Frames carrying only part of a message stay TCP in the
+protocol column and show `[TCP segment of a reassembled PDU]`.
+
+Bytes are only held if they could begin a message. At most 1 MB is held per
+direction and 4,096 directions at once, and a buffer nothing continues within
+60 seconds is abandoned: a length field is attacker-controlled, and splicing a
+fragment onto something arriving two minutes later would produce a message
+that never existed.
+
+### Follow Stream
+
+**Ctrl+Shift+F** on a selected packet, or a click in the conversations table.
+The transcript shows each direction in its own colour, as raw ASCII, UTF-8 or
+a hex dump, with per-direction byte counts. Clicking a run selects the frame
+it came from.
+
+It reconstructs what was captured, which is not always what was sent:
+retransmissions contribute nothing, overlaps keep the bytes seen first, and a
+gap nothing fills is reported rather than closed up.
+
+### Conversations
+
+*Statistics > Conversations* totals every conversation at four layers with
+per-direction packets and bytes, duration and bit rate, busiest first.
+Double-clicking a row filters the packet list to it; clicking follows its
+stream. Both this and Follow Stream are rebuilt from the frames currently
+held, so they always describe exactly what the packet list is showing.
 
 ## Display filters
 

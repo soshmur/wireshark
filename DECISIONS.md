@@ -576,3 +576,52 @@ before the segment arrived.
 Nothing in the hand-written fixtures would have caught it: they contain one
 deliberate keep-alive and no other one-byte writes. It took traffic generated
 by a rule rather than chosen by hand.
+
+### Follow Stream reconstructs what was captured, not what was sent
+
+The two are not the same, and the difference is the whole difficulty. A
+retransmission contributes nothing, because the application received those
+bytes once and a transcript showing them twice misrepresents the
+conversation. An overlap keeps the bytes seen first and takes only what is
+new. A hole nothing fills is reported and counted rather than closed up —
+joining the bytes either side of a gap produces a stream the sender never
+sent, and a stream with a hole in it must not look like a stream without one.
+
+Those three are unit-tested directly rather than through fixtures, because a
+fixture that exercises them is a fixture whose expectations are themselves
+hard to be sure of. Writing the tests corrected one of my own: I asserted the
+`tcp_analysis` fixture would report missing bytes, and it correctly reports
+none, because both of its gaps are later filled — one by an out-of-order
+segment and one by a fast retransmission.
+
+### The conversations table keys on the stream id, not the five-tuple
+
+Keying on addresses and ports alone looks obviously right and is wrong for
+the same reason it was wrong in the stream table: ports are reused. The
+fixture has two connections sharing a five-tuple exactly, and without the
+stream id in the key they were added together into one row describing traffic
+that never shared a conversation.
+
+Both the table and Follow Stream are built on demand from a snapshot rather
+than maintained incrementally by the dissection worker. Incremental totals
+would disagree with the store as soon as the ring evicted anything, and a
+statistics table that does not describe the frames the packet list is showing
+is worse than no table at all.
+
+### A count is not evidence
+
+The live run reported TCP keep-alives on 34% of frames, which looked exactly
+like the false positive found a few commits earlier. It was not: explaining
+the frames showed one-byte ACK-only segments re-sending the last byte, from
+long-lived push connections that send them every few seconds.
+
+The distinction could not be drawn from the count, so `examples/live_filter`
+gained `NETSCOPE_EXPLAIN`, which prints the first few matching frames field
+by field, and two filters that settle this particular question by
+construction: 61 one-byte segments, 56 called keep-alives and 5 not. Had the
+heuristic been flagging every one-byte segment the second count would be
+zero.
+
+This is the second time a live run has produced a large number that needed
+explaining rather than fixing — the first was checksum offload — and both
+times the count alone pointed the wrong way.
