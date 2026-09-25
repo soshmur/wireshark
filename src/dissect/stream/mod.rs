@@ -9,9 +9,11 @@
 //! reused within a capture, which is what makes them usable in a filter that
 //! the user types after the fact.
 
+pub mod desegment;
 pub mod table;
 pub mod tcp;
 
+pub use desegment::Desegment;
 pub use table::{Direction, Lookup, StreamKey, StreamTable};
 
 use crate::dissect::ctx::NetAddrs;

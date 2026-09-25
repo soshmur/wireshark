@@ -7,7 +7,7 @@
 //! get deterministic results by construction.
 
 use super::reassembly::Reassembly;
-use super::stream::StreamTable;
+use super::stream::{Desegment, StreamTable};
 
 #[derive(Debug, Default)]
 pub struct State {
@@ -15,6 +15,8 @@ pub struct State {
     pub reassembly: Reassembly,
     /// Conversation ids, and the per-conversation analysis state.
     pub streams: StreamTable,
+    /// Bytes of an incomplete PDU, waiting for the rest of the stream.
+    pub desegment: Desegment,
 }
 
 impl State {
@@ -22,6 +24,7 @@ impl State {
         State {
             reassembly: Reassembly::new(),
             streams: StreamTable::new(),
+            desegment: Desegment::new(),
         }
     }
 }
