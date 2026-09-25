@@ -146,3 +146,10 @@ path = "fuzz_targets/tcp_stream.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "pcap"
+path = "fuzz_targets/pcap.rs"
+test = false
+doc = false
+bench = false

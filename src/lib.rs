@@ -14,6 +14,7 @@ pub mod capture;
 pub mod config;
 pub mod dissect;
 pub mod filter;
+pub mod pcap;
 pub mod pcapng;
 pub mod store;
 pub mod synthetic;

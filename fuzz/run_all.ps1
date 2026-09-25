@@ -4,7 +4,7 @@ param([int]$Seconds = 60)
 $msvc = Get-ChildItem "C:\Program Files (x86)\Microsoft Visual Studio\*\BuildTools\VC\Tools\MSVC\*\bin\Hostx64\x64" -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName
 $env:Path = "$env:USERPROFILE\.cargo\bin;$msvc;$env:Path"
 Set-Location $PSScriptRoot
-$targets = @("eth","vlan","llc","arp","ipv4","ipv6","icmp","icmpv6","udp","tcp","dns","dhcp","http","tls","frame","pcapng","filter","filter_eval","tcp_stream")
+$targets = @("eth","vlan","llc","arp","ipv4","ipv6","icmp","icmpv6","udp","tcp","dns","dhcp","http","tls","frame","pcapng","filter","filter_eval","tcp_stream","pcap")
 $results = @()
 foreach ($t in $targets) {
     $out = cargo +nightly fuzz run $t -- "-max_total_time=$Seconds" -max_len=4096 2>&1
