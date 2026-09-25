@@ -5,9 +5,11 @@
 //! (small) open chunk, and indexing is O(1). Eviction removes whole chunks from
 //! the front, so the configured limits are honoured to within one chunk.
 
+pub mod conversations;
 pub mod follow;
 pub mod view;
 
+pub use conversations::{conversations, Row};
 pub use follow::{follow, Stream};
 pub use view::View;
 

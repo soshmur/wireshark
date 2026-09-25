@@ -641,3 +641,131 @@ mod follow {
         assert!(s.is_empty());
     }
 }
+
+/// The conversations table.
+mod conversations {
+    use super::load;
+    use netscope::store::conversations::{conversations, filter_for, Kind};
+    use netscope::store::{Limits, Store};
+    use std::sync::Arc;
+
+    fn rows(fixture: &str, kind: Kind) -> Vec<netscope::store::Row> {
+        let store = Store::new(Limits::default());
+        let frames: Vec<Arc<netscope::dissect::Frame>> =
+            load(fixture).into_iter().map(Arc::new).collect();
+        store.append(frames);
+        conversations(&store.snapshot(), kind)
+    }
+
+    #[test]
+    fn both_directions_total_into_one_row() {
+        // The streams fixture's first connection is 7 frames, 4 from the
+        // client and 3 from the server. Two rows each knowing half would be
+        // the classic failure.
+        let tcp = rows("streams", Kind::Tcp);
+        let first = tcp
+            .iter()
+            .find(|r| r.stream == Some(0))
+            .expect("stream 0 should have a row");
+        assert_eq!(first.total_packets(), 7);
+        // Endpoints are stored in a canonical order, which is not the order
+        // they were seen in, so the client is found by its port rather than
+        // assumed to be first.
+        let (client, server) = if first.port_a == 40000 {
+            (first.packets[0], first.packets[1])
+        } else {
+            (first.packets[1], first.packets[0])
+        };
+        assert_eq!((client, server), (4, 3));
+        assert!(first.bytes[0] > 0 && first.bytes[1] > 0);
+    }
+
+    #[test]
+    fn a_reused_port_is_its_own_conversation() {
+        // Streams 0 and 2 share a 5-tuple exactly. They must not share a
+        // row: adding a later connection's totals to an earlier one's would
+        // describe traffic that never shared a conversation.
+        let tcp = rows("streams", Kind::Tcp);
+        // Stream 5 also uses port 40000, over IPv6, so narrow to the two
+        // that share the exact IPv4 five-tuple.
+        let reused: Vec<_> = tcp
+            .iter()
+            .filter(|r| matches!(r.stream, Some(0) | Some(2)))
+            .collect();
+        assert_eq!(reused.len(), 2, "one row each for streams 0 and 2");
+        let mut totals: Vec<u64> = reused.iter().map(|r| r.total_packets()).collect();
+        totals.sort_unstable();
+        assert_eq!(totals, vec![3, 7]);
+        for row in reused {
+            let f = filter_for(row, Kind::Tcp);
+            assert!(
+                f.starts_with("tcp.stream == "),
+                "a row with a stream id filters by it: {f}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_layers_group_differently() {
+        // Every frame shares one pair of MACs, so Ethernet collapses to one
+        // row while TCP has several.
+        let eth = rows("streams", Kind::Ethernet);
+        let tcp = rows("streams", Kind::Tcp);
+        assert_eq!(eth.len(), 1, "one MAC pair: {eth:#?}");
+        assert!(tcp.len() > 1, "several TCP conversations");
+        // And the Ethernet row accounts for every frame.
+        assert_eq!(eth[0].total_packets(), 18);
+    }
+
+    #[test]
+    fn udp_and_tcp_are_counted_separately() {
+        let udp = rows("streams", Kind::Udp);
+        let tcp = rows("streams", Kind::Tcp);
+        assert_eq!(udp.iter().map(|r| r.total_packets()).sum::<u64>(), 3);
+        assert_eq!(tcp.iter().map(|r| r.total_packets()).sum::<u64>(), 15);
+    }
+
+    #[test]
+    fn rows_are_busiest_first() {
+        let tcp = rows("desegment", Kind::Tcp);
+        for pair in tcp.windows(2) {
+            assert!(
+                pair[0].total_bytes() >= pair[1].total_bytes(),
+                "the reason to open this table is to find what is using the link"
+            );
+        }
+    }
+
+    #[test]
+    fn ipv6_conversations_appear_at_the_ip_layer() {
+        let ip = rows("streams", Kind::Ip);
+        let v6 = ip
+            .iter()
+            .filter(|r| matches!(r.a, netscope::dissect::Addr::Ipv6(_)))
+            .count();
+        assert_eq!(v6, 1, "the fixture has one IPv6 conversation");
+        let row = ip
+            .iter()
+            .find(|r| matches!(r.a, netscope::dissect::Addr::Ipv6(_)))
+            .expect("row");
+        assert!(filter_for(row, Kind::Ip).starts_with("ipv6.addr == "));
+    }
+
+    #[test]
+    fn every_generated_filter_compiles() {
+        // The table's "apply as filter" action is only useful if what it
+        // produces is a filter the engine accepts.
+        for fixture in ["streams", "desegment", "tcp_analysis", "ipv6"] {
+            for kind in Kind::ALL {
+                for row in rows(fixture, kind) {
+                    let f = filter_for(&row, kind);
+                    assert!(
+                        netscope::filter::compile(&f).is_ok(),
+                        "{fixture}/{}: {f}",
+                        kind.name()
+                    );
+                }
+            }
+        }
+    }
+}

@@ -2,6 +2,7 @@
 //! start/stop; it never parses and never blocks on the capture pipeline.
 
 pub mod colour_rules;
+mod conversations_window;
 mod detail_tree;
 mod device_panel;
 mod filter_bar;
@@ -113,6 +114,7 @@ pub struct NetscopeApp {
     colours: colour_rules::Rules,
     find: find::FindBar,
     follow: follow_window::FollowState,
+    conversations: conversations_window::ConversationsState,
     store_stats: StoreStats,
     /// Link type the stored frames were dissected under, so they can be
     /// dissected again if a dissection preference changes.
@@ -160,6 +162,7 @@ impl NetscopeApp {
             colours,
             find: find::FindBar::default(),
             follow: follow_window::FollowState::default(),
+            conversations: conversations_window::ConversationsState::default(),
             store_stats: StoreStats::default(),
             link_type: netscope_ffi::LinkType::ETHERNET,
             store,
@@ -555,6 +558,12 @@ impl NetscopeApp {
                     ui.close_menu();
                 }
             });
+            ui.menu_button("Statistics", |ui| {
+                if ui.button("Conversations{2026}").clicked() {
+                    self.conversations.open = true;
+                    ui.close_menu();
+                }
+            });
             ui.menu_button("Capture", |ui| {
                 let capturing = self.is_capturing();
                 if ui
@@ -886,6 +895,27 @@ impl eframe::App for NetscopeApp {
                 if self.config.dissect_options() != before {
                     self.redissect();
                 }
+            }
+        }
+        if self.conversations.open {
+            let version = self.view.snapshot().version();
+            if self.conversations.stale(version) {
+                let rows = crate::store::conversations::conversations(
+                    self.view.snapshot(),
+                    self.conversations.kind,
+                );
+                self.conversations.set(rows, version);
+            }
+            match conversations_window::show(ctx, &mut self.conversations) {
+                conversations_window::Action::Filter(text) => {
+                    self.filter.set(text);
+                    self.rebuild_view();
+                }
+                conversations_window::Action::Follow(id) => {
+                    let stream = crate::store::follow::follow(self.view.snapshot(), id);
+                    self.follow.show(stream, id);
+                }
+                conversations_window::Action::None => {}
             }
         }
         if self.follow.open {
