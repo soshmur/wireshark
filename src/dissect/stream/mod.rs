@@ -10,6 +10,7 @@
 //! the user types after the fact.
 
 pub mod table;
+pub mod tcp;
 
 pub use table::{Direction, Lookup, StreamKey, StreamTable};
 
