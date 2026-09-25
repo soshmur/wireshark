@@ -542,3 +542,102 @@ mod tls_desegment {
         assert_eq!(&source[sni.range()], b"split.example.com");
     }
 }
+
+/// Follow Stream: rebuilding a conversation's bytes from the stored frames.
+mod follow {
+    use super::load;
+    use netscope::dissect::stream::Direction;
+    use netscope::store::{follow, Limits, Store};
+    use std::sync::Arc;
+
+    /// Put a fixture's frames into a store and follow a stream from it.
+    fn followed(fixture: &str, id: u32) -> netscope::store::Stream {
+        let store = Store::new(Limits::default());
+        let frames: Vec<Arc<netscope::dissect::Frame>> =
+            load(fixture).into_iter().map(Arc::new).collect();
+        store.append(frames);
+        follow::follow(&store.snapshot(), id)
+    }
+
+    #[test]
+    fn a_conversation_comes_back_in_order_and_by_direction() {
+        // Stream 0 of the desegment fixture: a request out, a response back
+        // in three segments, then more.
+        let s = followed("desegment", 0);
+        let client = s.joined(Direction::Forward);
+        let server = s.joined(Direction::Reverse);
+        assert!(
+            client.starts_with(b"GET /split HTTP/1.1\r\n"),
+            "client side starts with the request"
+        );
+        assert!(
+            server.starts_with(b"HTTP/1.1 200 OK\r\n"),
+            "server side starts with the response"
+        );
+        // The split body is contiguous in the reassembled server side.
+        let text = String::from_utf8_lossy(&server);
+        assert!(
+            text.contains("0123456789abcdefghijABCDEFGHIJ"),
+            "the three-segment body should be joined"
+        );
+        assert_eq!(s.missing, 0, "nothing was dropped in this capture");
+    }
+
+    #[test]
+    fn retransmissions_do_not_appear_twice() {
+        // The tcp_analysis fixture resends the same ten bytes three times.
+        // A transcript showing them three times would be a lie about what
+        // the application received.
+        let s = followed("tcp_analysis", 0);
+        let client = s.joined(Direction::Forward);
+        let text = String::from_utf8_lossy(&client);
+        assert_eq!(
+            text.matches("0123456789").count(),
+            text.len() / 10,
+            "every ten-byte run should be distinct data, not a repeat"
+        );
+    }
+
+    #[test]
+    fn gaps_that_are_later_filled_are_not_reported_as_missing() {
+        // The fixture skips bytes twice and fills both holes: once by an
+        // out-of-order segment and once by a fast retransmission. A capture
+        // that recovered everything must not claim to be missing anything.
+        let s = followed("tcp_analysis", 0);
+        assert_eq!(s.missing, 0);
+        assert!(s.chunks.iter().all(|c| c.gap_before == 0));
+    }
+
+    #[test]
+    fn both_directions_are_counted_separately() {
+        let s = followed("desegment", 0);
+        assert!(s.frames[0] > 0 && s.frames[1] > 0);
+        assert!(s.bytes[0] > 0 && s.bytes[1] > 0);
+        assert_ne!(s.bytes[0], s.bytes[1]);
+    }
+
+    #[test]
+    fn a_udp_flow_follows_in_capture_order() {
+        // Stream 3 of the streams fixture is a UDP exchange. Datagrams have
+        // no sequence space, so capture order is the only order there is.
+        let s = followed("streams", 3);
+        assert_eq!(s.joined(Direction::Forward), b"q");
+        assert_eq!(s.joined(Direction::Reverse), b"a");
+        assert_eq!(s.missing, 0);
+    }
+
+    #[test]
+    fn following_a_stream_that_is_not_there_gives_nothing() {
+        let s = followed("streams", 999);
+        assert!(s.is_empty());
+        assert_eq!(s.frames, [0, 0]);
+    }
+
+    #[test]
+    fn a_handshake_only_stream_has_no_bytes_to_show() {
+        // Stream 5 of the streams fixture is a SYN and a SYN/ACK over IPv6.
+        // Neither carries payload, so there is nothing to follow.
+        let s = followed("streams", 5);
+        assert!(s.is_empty());
+    }
+}

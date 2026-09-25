@@ -58,6 +58,14 @@ pub enum Action {
 }
 
 impl FilterBar {
+    /// Replace the text and apply it, as Follow Stream does when it narrows
+    /// the list to one conversation.
+    pub fn set(&mut self, text: impl Into<String>) {
+        self.text = text.into();
+        self.suggestions.clear();
+        self.apply();
+    }
+
     /// Ask for keyboard focus (Ctrl+K).
     pub fn request_focus(&mut self) {
         self.focus_requested = true;

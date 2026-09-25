@@ -7,6 +7,7 @@ mod device_panel;
 mod filter_bar;
 pub mod find;
 mod first_run;
+mod follow_window;
 mod hex_pane;
 mod packet_list;
 mod settings;
@@ -111,6 +112,7 @@ pub struct NetscopeApp {
     /// Compiled colour rules, applied per displayed row.
     colours: colour_rules::Rules,
     find: find::FindBar,
+    follow: follow_window::FollowState,
     store_stats: StoreStats,
     /// Link type the stored frames were dissected under, so they can be
     /// dissected again if a dissection preference changes.
@@ -157,6 +159,7 @@ impl NetscopeApp {
             filter: filter_bar::FilterBar::default(),
             colours,
             find: find::FindBar::default(),
+            follow: follow_window::FollowState::default(),
             store_stats: StoreStats::default(),
             link_type: netscope_ffi::LinkType::ETHERNET,
             store,
@@ -344,6 +347,26 @@ impl NetscopeApp {
         self.view = View::build(self.store.snapshot(), self.filter.applied.as_ref());
     }
 
+    /// The conversation the selected frame belongs to, if any.
+    fn selected_stream(&self) -> Option<u32> {
+        let frame = self.selected_frame()?;
+        let id = frame
+            .tree
+            .find("tcp.stream")
+            .chain(frame.tree.find("udp.stream"))
+            .find_map(|n| n.unsigned())?;
+        Some(id as u32)
+    }
+
+    /// Gather the selected frame's conversation and show it.
+    fn follow_selected(&mut self) {
+        let Some(id) = self.selected_stream() else {
+            return;
+        };
+        let stream = crate::store::follow::follow(self.view.snapshot(), id);
+        self.follow.show(stream, id);
+    }
+
     /// The frame currently selected in the list, if still held.
     fn selected_frame(&self) -> Option<Arc<Frame>> {
         self.list
@@ -381,7 +404,13 @@ impl NetscopeApp {
             return;
         }
         if ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::F)) {
-            self.find.open();
+            // Shift makes it Follow Stream, which is the other thing one
+            // wants to do with a selected packet.
+            if ctx.input(|i| i.modifiers.shift) {
+                self.follow_selected();
+            } else {
+                self.find.open();
+            }
             return;
         }
         // F3 repeats the last find without returning to the bar.
@@ -476,6 +505,15 @@ impl NetscopeApp {
                     .clicked()
                 {
                     self.run_find(find::Direction::Backward);
+                    ui.close_menu();
+                }
+                ui.separator();
+                let has_stream = self.selected_stream().is_some();
+                if ui
+                    .add_enabled(has_stream, egui::Button::new("Follow stream	Ctrl+Shift+F"))
+                    .clicked()
+                {
+                    self.follow_selected();
                     ui.close_menu();
                 }
             });
@@ -848,6 +886,23 @@ impl eframe::App for NetscopeApp {
                 if self.config.dissect_options() != before {
                     self.redissect();
                 }
+            }
+        }
+        if self.follow.open {
+            match follow_window::show(ctx, &mut self.follow) {
+                follow_window::Action::GoTo(number) => {
+                    if let Some(row) = self.view.row_of(number) {
+                        self.list.selected = Some(number);
+                        self.list.scroll_to = Some((row, egui::Align::Center));
+                        self.list.follow = false;
+                    }
+                }
+                follow_window::Action::FilterStream(id) => {
+                    self.filter
+                        .set(format!("tcp.stream == {id} || udp.stream == {id}"));
+                    self.rebuild_view();
+                }
+                follow_window::Action::None => {}
             }
         }
         if self.show_colour_rules
