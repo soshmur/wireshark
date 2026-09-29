@@ -11,6 +11,8 @@ pub mod find;
 mod first_run;
 mod follow_window;
 mod hex_pane;
+mod hierarchy_window;
+mod io_graph_window;
 mod packet_list;
 mod settings;
 pub mod timefmt;
@@ -117,6 +119,8 @@ pub struct NetscopeApp {
     follow: follow_window::FollowState,
     conversations: conversations_window::ConversationsState,
     dialog: file_dialog::FileDialog,
+    hierarchy: hierarchy_window::HierarchyState,
+    io_graph: io_graph_window::IoGraphState,
     /// Where the frames in the store came from, for the title bar.
     source: Option<String>,
     /// The outcome of the last open or save, shown until the next one.
@@ -170,6 +174,8 @@ impl NetscopeApp {
             follow: follow_window::FollowState::default(),
             conversations: conversations_window::ConversationsState::default(),
             dialog: file_dialog::FileDialog::default(),
+            hierarchy: hierarchy_window::HierarchyState::default(),
+            io_graph: io_graph_window::IoGraphState::default(),
             source: None,
             file_message: None,
             store_stats: StoreStats::default(),
@@ -694,6 +700,14 @@ impl NetscopeApp {
                     self.conversations.open = true;
                     ui.close_menu();
                 }
+                if ui.button("Protocol hierarchy{2026}").clicked() {
+                    self.hierarchy.open = true;
+                    ui.close_menu();
+                }
+                if ui.button("I/O graph{2026}").clicked() {
+                    self.io_graph.open = true;
+                    ui.close_menu();
+                }
             });
             ui.menu_button("Capture", |ui| {
                 let capturing = self.is_capturing();
@@ -1049,6 +1063,34 @@ impl eframe::App for NetscopeApp {
                     self.save_file(&path, format, set)
                 }
                 file_dialog::Action::None => {}
+            }
+        }
+        if self.hierarchy.open {
+            let version = self.view.snapshot().version();
+            if self.hierarchy.stale(version) {
+                let snap = self.view.snapshot();
+                let rows = crate::store::hierarchy::hierarchy(snap);
+                let totals = crate::store::hierarchy::totals(snap);
+                self.hierarchy.set(rows, totals, version);
+            }
+            if let hierarchy_window::Action::Filter(text) =
+                hierarchy_window::show(ctx, &mut self.hierarchy)
+            {
+                self.filter.set(text);
+                self.rebuild_view();
+            }
+        }
+        if self.io_graph.open {
+            let version = self.view.snapshot().version();
+            if self.io_graph.stale(version) {
+                let snap = self.view.snapshot().clone();
+                self.io_graph.rebuild(&snap, version);
+            }
+            if let io_graph_window::Action::Filter(text) =
+                io_graph_window::show(ctx, &mut self.io_graph)
+            {
+                self.filter.set(text);
+                self.rebuild_view();
             }
         }
         if self.conversations.open {
