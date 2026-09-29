@@ -19,7 +19,7 @@ native binary with an immediate-mode UI.
 | 2 | Dissectors: Ethernet … TLS, IPv4 reassembly, detail tree, fuzz targets | done |
 | 3 | Display filter language, filter bar, colour rules, find | done |
 | 4 | Conversations, TCP analysis, desegmentation, Follow Stream, expert info | done |
-| 5 | pcap/pcapng I/O, statistics | — |
+| 5 | pcap/pcapng I/O, export, statistics | — |
 
 Dissection runs at 538-559k frames/s on one core for the Ethernet/IPv4/TCP
 path; see [DECISIONS.md](DECISIONS.md) for the measurements.
@@ -83,6 +83,52 @@ captured — see below.
 The status bar shows frames held, evictions, memory, capture rate, drops at
 each stage (channel / driver / interface) and the UI frame time.
 
+
+
+## Files
+
+**File > Open** (Ctrl+O) reads pcap or pcapng, choosing the parser from the
+first bytes rather than the file name - a `.pcap` that is really pcapng is
+common. Frames are dissected through the same path as a live capture, so a
+file and a capture of the same bytes produce identical trees. The ring buffer
+limits still apply; if they bite, the status line says so.
+
+**File > Save as** (Ctrl+S) and **Export displayed** write all packets, the
+ones the display filter is showing, or the selected one.
+
+| | pcapng | pcap |
+|---|---|---|
+| Timestamps | nanosecond | microsecond or nanosecond, chosen from the data |
+| Link types | one interface per type | one for the whole file |
+| Interface names | kept | not in the format |
+
+pcap stores one timestamp precision for the whole file. netscope writes the
+nanosecond magic (`a1b23c4d`) when any frame carries sub-microsecond detail
+and the ordinary one otherwise, and says which it chose - writing microseconds
+always would discard detail silently, and nanoseconds always would produce
+files libpcap before 1.5 cannot read. A capture mixing link types cannot be
+written to pcap at all without making some frames dissect as something else,
+so those frames are left out and the message says how many.
+
+A file in Kuznetsov's modified format (magic `a1b2cd34`) is refused by name.
+Reading it as ordinary pcap does not fail - it yields packets whose lengths
+and timestamps are nonsense - so the error says what the file is and suggests
+`editcap`.
+
+## Statistics
+
+*Statistics > Protocol hierarchy* shows what the capture is made of. A frame
+counts at every protocol on its chain, so `eth` is 100% of an Ethernet
+capture. The "ends here" column is the useful one: a high `tcp` with a low
+`tcp` end count means the payloads were recognised, and the reverse means
+they were not. Double-click a row to filter to that chain.
+
+*Statistics > I/O graph* plots traffic over time. Each series is a display
+filter with its own colour, so the graph answers whatever the filter language
+can express - retransmissions against throughput, one conversation against
+the rest. Interval and unit (packets, bytes, bits/s) are selectable, and a
+series whose filter does not compile shows the error rather than quietly
+counting nothing.
 
 ## Conversations and streams
 
@@ -238,7 +284,8 @@ cargo run --release --example bench_dissect                  # dissector through
 cargo run --release --example bench_store                    # dissect+store throughput
 cargo run --release --example filter_probe -- dns "dns.qry.name contains \"example\""  # try a filter on a fixture
 cargo run --release --example bench_filter                   # display-filter throughput
-cargo run --release --example live_filter -- "Wi-Fi" 20      # filters + colour rules on live traffic
+cargo run --release --example live_filter -- "Wi-Fi" 20      # filters, stats and a file round trip on live traffic
+cargo run --release --example file_roundtrip -- 5000          # save and reopen, without the UI
 NETSCOPE_EXPLAIN="tcp.analysis.keep_alive" cargo run --release --example live_filter  # triage a finding
 cargo run --release --example find_malformed -- "Wi-Fi" 20   # triage live frames that fail to dissect
 NETSCOPE_REGEN=1 cargo test --test fixtures                  # regenerate fixture captures

@@ -153,3 +153,10 @@ path = "fuzz_targets/pcap.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "capture_file"
+path = "fuzz_targets/capture_file.rs"
+test = false
+doc = false
+bench = false

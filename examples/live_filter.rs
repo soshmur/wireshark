@@ -195,6 +195,46 @@ fn main() {
         }
     }
 
+    // Save the live capture and read it back. Fixtures are built by the same
+    // writer they are read by; real traffic exercises lengths, timestamps and
+    // link types that nothing here chose.
+    use netscope::capture::file::{self as capfile, SaveFormat};
+    let all: Vec<std::sync::Arc<netscope::dissect::Frame>> = snapshot.iter().cloned().collect();
+    for format in [SaveFormat::Pcapng, SaveFormat::Pcap] {
+        let path = std::env::temp_dir().join(format!("netscope-live.{}", format.extension()));
+        let Ok(saved) = capfile::save_path(&path, &all, format) else {
+            println!("\ncould not write {}", path.display());
+            continue;
+        };
+        match capfile::load_path(&path) {
+            Ok(back) => {
+                let again = back.dissect_all(options);
+                let same_bytes = all
+                    .iter()
+                    .zip(&again)
+                    .filter(|(a, b)| a.bytes == b.bytes)
+                    .count();
+                let same_trees = all
+                    .iter()
+                    .zip(&again)
+                    .filter(|(a, b)| a.summary.info == b.summary.info)
+                    .count();
+                println!(
+                    "\n{}: wrote {} packets, reread {}, {same_bytes} byte-identical, \
+                     {same_trees} dissect the same",
+                    format.extension(),
+                    saved.frames,
+                    again.len()
+                );
+                for n in saved.notes.iter().chain(&back.warnings) {
+                    println!("  note: {n}");
+                }
+            }
+            Err(e) => println!("\n{}: reread failed: {e}", format.extension()),
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
     println!("\ncolour rules (first match wins):");
     let rules = Rules::new(defaults());
     let mut counts = vec![0usize; rules.rules().len()];

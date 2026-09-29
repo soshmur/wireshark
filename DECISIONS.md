@@ -657,3 +657,84 @@ So: absolute throughput figures in this file are only meaningful against a
 cool machine, and only comparable within one session. The method that
 survives that is measuring the old commit and the new one alternately, in the
 state the machine happens to be in.
+
+## Phase 5 — file I/O and statistics
+
+### The modified pcap format is refused by name
+
+Three magic numbers mean "pcap", and a fourth, `a1b2cd34`, means Alexey
+Kuznetsov's modified format. It shares the file header and the shape of a
+record but inserts four extra fields into every record header.
+
+Reading it as ordinary pcap does not fail. It yields packets whose lengths
+and timestamps are nonsense, which is worse than an error, because the result
+looks like data. `ReadError::Modified` names the format and suggests
+`editcap`, which is the thing a user can actually do about it.
+
+The same reasoning drives sniffing by content rather than by file name. A
+`.pcap` that is really pcapng is common — tcpdump has written pcapng by
+default on some systems for years — and picking the parser from the extension
+turns that into a parse error at best.
+
+### pcap writes the precision the data needs
+
+Classic pcap stores one timestamp precision for the whole file, declared by
+its magic. netscope's frames carry nanoseconds. Writing microseconds always
+would silently discard sub-microsecond detail on every export; writing
+nanoseconds always would produce files that libpcap before 1.5 cannot read.
+
+So the writer looks: nanosecond magic when any frame has sub-microsecond
+detail, the ordinary magic otherwise, and the save reports which it chose and
+why it matters. Nothing is lost without saying so, and nothing is made
+needlessly incompatible.
+
+Truncation rather than rounding, in the microsecond case. Rounding
+999,999,999 ns up gives 1,000,000 µs, which is a whole second in a field that
+cannot hold one.
+
+### A hand-written format checked only by its own reader is not checked
+
+Every round-trip test here writes with netscope and reads with netscope,
+which cannot catch a mistake both halves share. So the test suite also hands
+a file netscope wrote to libpcap — the reference implementation, already
+linked — and compares what it reports.
+
+`netscope_ffi::verify_savefile` exists for that and nothing else. Nothing in
+the application calls it; the hand-written readers remain the only ones in
+the product, which is what the brief asked for. Using the reference
+implementation to *check* a hand-written one is not the same as using it to
+*be* one.
+
+There is no equivalent check for pcapng on this machine — no Wireshark,
+`capinfos` or `tshark` installed — so that half is validated only against
+itself. Stated rather than left implied.
+
+### No native file dialog, because of what it would drag in
+
+`rfd` is the usual crate for native file dialogs. On Linux its portal backend
+reaches for an async runtime, and the brief bans async runtimes. A native
+dialog is nicer than a directory listing, but not at the cost of the
+constraint the brief was most explicit about, so the chooser is a few hundred
+lines of egui that behave identically everywhere.
+
+The I/O graph is drawn with egui's painter for the same reason: axes, a grid
+and polylines are not worth a plotting dependency in a project that counts
+its dependencies.
+
+### The benchmark was measuring the power plan
+
+Dissection measured 232-356k frames/s, against 509-541k recorded earlier —
+the third time this session a number has dropped by a factor that looks like
+a serious regression.
+
+It was the battery. The laptop was discharging at 24%, and Windows had capped
+the CPU at 1300 MHz against its plugged-in boost clock, which is almost
+exactly the ratio observed. Building the Phase 2 commit and alternating
+confirmed it: that build measured 177k too, against the 548-565k it gave
+plugged in.
+
+The recurring lesson, now three times over: an absolute throughput figure on
+a laptop describes the machine's power state as much as the code. The only
+measurement that survives is the old commit and the new one alternately, in
+whatever state the machine is in — which says Phase 5 is level with Phase 2,
+and that is the claim worth making.
