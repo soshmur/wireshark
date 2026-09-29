@@ -244,3 +244,70 @@ fn a_pcapng_packet_naming_a_missing_interface_is_shown_not_dropped() {
         loaded.warnings
     );
 }
+
+/// libpcap reading what netscope wrote.
+///
+/// Everything above validates the writer against netscope's own reader,
+/// which cannot catch a mistake both halves share — a format validated only
+/// by its own reader is validated against its own misreadings. libpcap is
+/// the reference implementation and is already linked, so it can be asked.
+///
+/// It only reads classic pcap here. pcapng has no equivalent check available
+/// on this machine, which is stated plainly rather than papered over.
+mod against_libpcap {
+    use super::*;
+
+    fn temp_path(name: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("netscope-test-{name}"))
+    }
+
+    #[test]
+    fn libpcap_agrees_about_a_file_netscope_wrote() {
+        let dissected = frames("streams");
+        let path = temp_path("streams.pcap");
+        let saved = file::save_path(&path, &dissected, SaveFormat::Pcap).expect("write the file");
+
+        let (link, packets) = match netscope_ffi::verify_savefile(&path.to_string_lossy()) {
+            Ok(v) => v,
+            Err(e) => {
+                // libpcap is loaded lazily on Windows; without Npcap there is
+                // nothing to compare against, and saying so beats failing.
+                eprintln!("skipping: libpcap unavailable ({e})");
+                return;
+            }
+        };
+        assert_eq!(link, LinkType::ETHERNET, "libpcap read the link type");
+        assert_eq!(
+            packets.len(),
+            saved.frames,
+            "libpcap found a different number of packets"
+        );
+        for (i, ((_secs, _nanos, orig_len, bytes), ours)) in
+            packets.iter().zip(&dissected).enumerate()
+        {
+            assert_eq!(bytes, &ours.bytes.to_vec(), "frame {i}: bytes");
+            assert_eq!(*orig_len, ours.orig_len, "frame {i}: wire length");
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn libpcap_reads_a_microsecond_file_too() {
+        // The two magics are different code paths in both implementations.
+        let mut dissected = frames("streams");
+        for f in &mut dissected {
+            Arc::make_mut(f).ts.nanos = 2000;
+        }
+        let path = temp_path("micros.pcap");
+        let saved = file::save_path(&path, &dissected, SaveFormat::Pcap).expect("write");
+        assert_eq!(saved.precision, Some(Precision::Micro));
+        match netscope_ffi::verify_savefile(&path.to_string_lossy()) {
+            Ok((_, packets)) => {
+                assert_eq!(packets.len(), dissected.len());
+                assert_eq!(packets[0].1, 2, "libpcap reports 2 microseconds");
+            }
+            Err(e) => eprintln!("skipping: libpcap unavailable ({e})"),
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+}

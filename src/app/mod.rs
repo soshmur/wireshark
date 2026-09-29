@@ -5,6 +5,7 @@ pub mod colour_rules;
 mod conversations_window;
 mod detail_tree;
 mod device_panel;
+mod file_dialog;
 mod filter_bar;
 pub mod find;
 mod first_run;
@@ -115,6 +116,11 @@ pub struct NetscopeApp {
     find: find::FindBar,
     follow: follow_window::FollowState,
     conversations: conversations_window::ConversationsState,
+    dialog: file_dialog::FileDialog,
+    /// Where the frames in the store came from, for the title bar.
+    source: Option<String>,
+    /// The outcome of the last open or save, shown until the next one.
+    file_message: Option<(bool, String)>,
     store_stats: StoreStats,
     /// Link type the stored frames were dissected under, so they can be
     /// dissected again if a dissection preference changes.
@@ -163,6 +169,9 @@ impl NetscopeApp {
             find: find::FindBar::default(),
             follow: follow_window::FollowState::default(),
             conversations: conversations_window::ConversationsState::default(),
+            dialog: file_dialog::FileDialog::default(),
+            source: None,
+            file_message: None,
             store_stats: StoreStats::default(),
             link_type: netscope_ffi::LinkType::ETHERNET,
             store,
@@ -338,6 +347,89 @@ impl NetscopeApp {
         });
     }
 
+    /// Replace everything in the store with the contents of a file.
+    fn open_file(&mut self, path: &std::path::Path) {
+        self.stop_capture();
+        let loaded = match crate::capture::file::load_path(path) {
+            Ok(l) => l,
+            Err(e) => {
+                self.file_message = Some((false, format!("{}: {e}", path.display())));
+                return;
+            }
+        };
+        let frames = loaded.dissect_all(self.config.dissect_options());
+        let count = frames.len();
+        // The ring limits still apply: opening a file larger than they allow
+        // must not be the one path that ignores them.
+        self.store.clear();
+        for chunk in frames.chunks(4096) {
+            self.store.append(chunk.to_vec());
+        }
+        self.link_type = loaded.link_type_of(0);
+        self.list = ListState::default();
+        self.tree = TreeState::default();
+        self.hex = HexState::default();
+        self.rebuild_view();
+        self.store_stats = self.store.stats();
+        self.show_devices = false;
+        self.source = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .or_else(|| Some(path.display().to_string()));
+
+        let mut note = format!("Opened {count} packets from {}", path.display());
+        let held = self.store.stats().frames;
+        if held < count as u64 {
+            note.push_str(&format!(
+                "; the ring buffer holds {held}, the oldest were evicted"
+            ));
+        }
+        for w in &loaded.warnings {
+            note.push_str("; ");
+            note.push_str(w);
+        }
+        self.file_message = Some((true, note));
+    }
+
+    /// The frames a save should write.
+    fn frames_for(&self, set: file_dialog::FrameSet) -> Vec<Arc<Frame>> {
+        match set {
+            file_dialog::FrameSet::All => self.view.snapshot().iter().cloned().collect(),
+            file_dialog::FrameSet::Displayed => self.view.iter().cloned().collect(),
+            file_dialog::FrameSet::Selected => self.selected_frame().into_iter().collect(),
+        }
+    }
+
+    fn save_file(
+        &mut self,
+        path: &std::path::Path,
+        format: crate::capture::file::SaveFormat,
+        set: file_dialog::FrameSet,
+    ) {
+        let frames = self.frames_for(set);
+        match crate::capture::file::save_path(path, &frames, format) {
+            Ok(saved) => {
+                let mut note = format!(
+                    "Wrote {} packets ({}) to {}",
+                    saved.frames,
+                    file_dialog::human_size(saved.bytes as u64),
+                    path.display()
+                );
+                if let Some(p) = saved.precision {
+                    note.push_str(&format!(", {} timestamps", p.name()));
+                }
+                for n in &saved.notes {
+                    note.push_str("; ");
+                    note.push_str(n);
+                }
+                self.file_message = Some((true, note));
+            }
+            Err(e) => {
+                self.file_message = Some((false, format!("{}: {e}", path.display())));
+            }
+        }
+    }
+
     fn refresh_view(&mut self) {
         if self.store.version() != self.view.version() {
             self.rebuild_view();
@@ -404,6 +496,18 @@ impl NetscopeApp {
         // Ctrl+K focuses the filter bar from anywhere, Ctrl+F the find bar.
         if ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::K)) {
             self.filter.request_focus();
+            return;
+        }
+        if !self.is_capturing() && ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::O))
+        {
+            self.dialog.open_for(file_dialog::Mode::Open, None);
+            return;
+        }
+        if self.view.total() > 0
+            && ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::S))
+        {
+            self.dialog
+                .open_for(file_dialog::Mode::Save, Some("capture".into()));
             return;
         }
         if ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::F)) {
@@ -487,6 +591,33 @@ impl NetscopeApp {
     fn menu_bar(&mut self, ui: &mut egui::Ui) {
         egui::menu::bar(ui, |ui| {
             ui.menu_button("File", |ui| {
+                let capturing = self.is_capturing();
+                if ui
+                    .add_enabled(!capturing, egui::Button::new("Open…\tCtrl+O"))
+                    .clicked()
+                {
+                    self.dialog.open_for(file_dialog::Mode::Open, None);
+                    ui.close_menu();
+                }
+                let has_frames = self.view.total() > 0;
+                if ui
+                    .add_enabled(has_frames, egui::Button::new("Save as…\tCtrl+S"))
+                    .clicked()
+                {
+                    self.dialog
+                        .open_for(file_dialog::Mode::Save, Some("capture".into()));
+                    ui.close_menu();
+                }
+                if ui
+                    .add_enabled(has_frames, egui::Button::new("Export displayed…"))
+                    .clicked()
+                {
+                    self.dialog
+                        .open_for(file_dialog::Mode::Save, Some("displayed".into()));
+                    self.dialog.set = file_dialog::FrameSet::Displayed;
+                    ui.close_menu();
+                }
+                ui.separator();
                 if ui.button("Quit").clicked() {
                     ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
                 }
@@ -681,9 +812,14 @@ impl NetscopeApp {
                         lt.0
                     ));
                 }
-                None => {
-                    ui.label("Idle");
-                }
+                None => match &self.source {
+                    Some(name) => {
+                        ui.label(format!("File: {name}"));
+                    }
+                    None => {
+                        ui.label("Idle");
+                    }
+                },
             }
             ui.separator();
             let st = &self.store_stats;
@@ -728,6 +864,15 @@ impl NetscopeApp {
             if let Some(err) = &self.capture_error {
                 ui.separator();
                 ui.colored_label(egui::Color32::from_rgb(220, 80, 80), err);
+            }
+            if let Some((ok, text)) = &self.file_message {
+                ui.separator();
+                let colour = if *ok {
+                    egui::Color32::from_rgb(140, 200, 150)
+                } else {
+                    egui::Color32::from_rgb(220, 80, 80)
+                };
+                ui.colored_label(colour, text);
             }
         });
     }
@@ -895,6 +1040,15 @@ impl eframe::App for NetscopeApp {
                 if self.config.dissect_options() != before {
                     self.redissect();
                 }
+            }
+        }
+        if self.dialog.open {
+            match file_dialog::show(ctx, &mut self.dialog) {
+                file_dialog::Action::Open(path) => self.open_file(&path),
+                file_dialog::Action::Save { path, format, set } => {
+                    self.save_file(&path, format, set)
+                }
+                file_dialog::Action::None => {}
             }
         }
         if self.conversations.open {

@@ -134,6 +134,38 @@ impl Default for OpenOptions {
     }
 }
 
+/// Read a savefile with libpcap, for *verifying* netscope's own writer.
+///
+/// netscope reads and writes pcap and pcapng itself, hand-written against the
+/// specifications, as the brief requires — this is not part of that path and
+/// nothing in the application calls it. It exists so the test suite can hand
+/// a file netscope wrote to the reference implementation and check that
+/// libpcap agrees about its contents. A hand-written format validated only
+/// by its own reader is a format validated against its own misreadings.
+///
+/// Returns the link type and every packet as (secs, nanos, orig_len, bytes).
+#[allow(clippy::type_complexity)]
+pub fn verify_savefile(path: &str) -> Result<(LinkType, Vec<(i64, u32, u32, Vec<u8>)>), Error> {
+    let mut cap = pcap::Capture::from_file(path)?;
+    let link_type = LinkType(cap.get_datalink().0);
+    // libpcap reports microseconds unless asked otherwise; the caller
+    // compares at whatever precision the file it wrote carries.
+    let mut out = Vec::new();
+    loop {
+        match cap.next_packet() {
+            Ok(p) => out.push((
+                i64::from(p.header.ts.tv_sec),
+                (i64::from(p.header.ts.tv_usec).clamp(0, 999_999_999)) as u32,
+                p.header.len,
+                p.data.to_vec(),
+            )),
+            Err(pcap::Error::NoMorePackets) => break,
+            Err(e) => return Err(e.into()),
+        }
+    }
+    Ok((link_type, out))
+}
+
 /// An open live capture. Not `Sync`; use it from one thread.
 pub struct Handle {
     cap: pcap::Capture<pcap::Active>,
