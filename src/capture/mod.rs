@@ -3,6 +3,7 @@
 pub mod device;
 pub mod file;
 pub mod frame;
+pub mod loader;
 pub mod preflight;
 pub mod thread;
 

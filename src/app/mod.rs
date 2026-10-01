@@ -125,6 +125,8 @@ pub struct NetscopeApp {
     source: Option<String>,
     /// The outcome of the last open or save, shown until the next one.
     file_message: Option<(bool, String)>,
+    /// A file being read, on its own thread.
+    loading: Option<crate::capture::loader::Loader>,
     store_stats: StoreStats,
     /// Link type the stored frames were dissected under, so they can be
     /// dissected again if a dissection preference changes.
@@ -178,6 +180,7 @@ impl NetscopeApp {
             io_graph: io_graph_window::IoGraphState::default(),
             source: None,
             file_message: None,
+            loading: None,
             store_stats: StoreStats::default(),
             link_type: netscope_ffi::LinkType::ETHERNET,
             store,
@@ -353,46 +356,62 @@ impl NetscopeApp {
         });
     }
 
-    /// Replace everything in the store with the contents of a file.
+    /// Start reading a file. The work happens on its own thread; the UI picks
+    /// frames up through the store's version counter, exactly as it does for
+    /// a live capture.
     fn open_file(&mut self, path: &std::path::Path) {
         self.stop_capture();
-        let loaded = match crate::capture::file::load_path(path) {
-            Ok(l) => l,
-            Err(e) => {
-                self.file_message = Some((false, format!("{}: {e}", path.display())));
-                return;
-            }
-        };
-        let frames = loaded.dissect_all(self.config.dissect_options());
-        let count = frames.len();
-        // The ring limits still apply: opening a file larger than they allow
-        // must not be the one path that ignores them.
-        self.store.clear();
-        for chunk in frames.chunks(4096) {
-            self.store.append(chunk.to_vec());
-        }
-        self.link_type = loaded.link_type_of(0);
+        // Dropping any previous loader cancels it, so two opens in quick
+        // succession cannot both be appending to the store.
+        self.loading = None;
         self.list = ListState::default();
         self.tree = TreeState::default();
         self.hex = HexState::default();
-        self.rebuild_view();
-        self.store_stats = self.store.stats();
         self.show_devices = false;
         self.source = path
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .or_else(|| Some(path.display().to_string()));
+        self.file_message = None;
+        self.loading = Some(crate::capture::loader::Loader::spawn(
+            path,
+            Arc::clone(&self.store),
+            self.config.dissect_options(),
+        ));
+    }
 
-        let mut note = format!("Opened {count} packets from {}", path.display());
+    /// Fold a finished load into the application state.
+    fn poll_loading(&mut self) {
+        let Some(loader) = &self.loading else {
+            return;
+        };
+        if !loader.is_finished() {
+            return;
+        }
+        let progress = Arc::clone(&loader.progress);
+        let path = loader.path.clone();
+        self.loading = None;
+        self.link_type = progress.link_type();
+        if let Some(e) = progress.error() {
+            self.file_message = Some((false, e));
+            self.source = None;
+            return;
+        }
+        let count = progress.done();
+        let mut note = if progress.was_cancelled() {
+            format!("Cancelled after {count} packets from {}", path.display())
+        } else {
+            format!("Opened {count} packets from {}", path.display())
+        };
         let held = self.store.stats().frames;
-        if held < count as u64 {
+        if held < count {
             note.push_str(&format!(
                 "; the ring buffer holds {held}, the oldest were evicted"
             ));
         }
-        for w in &loaded.warnings {
+        for w in progress.warnings() {
             note.push_str("; ");
-            note.push_str(w);
+            note.push_str(&w);
         }
         self.file_message = Some((true, note));
     }
@@ -879,6 +898,24 @@ impl NetscopeApp {
                 ui.separator();
                 ui.colored_label(egui::Color32::from_rgb(220, 80, 80), err);
             }
+            if let Some(loader) = &self.loading {
+                ui.separator();
+                let p = &loader.progress;
+                let total = p.total();
+                if total == 0 {
+                    ui.label("Reading file{2026}");
+                } else {
+                    ui.label(format!("Loading {} of {total} packets", p.done()));
+                    ui.add(
+                        egui::ProgressBar::new(p.fraction())
+                            .desired_width(120.0)
+                            .show_percentage(),
+                    );
+                }
+                if ui.button("Cancel").clicked() {
+                    p.cancel();
+                }
+            }
             if let Some((ok, text)) = &self.file_message {
                 ui.separator();
                 let colour = if *ok {
@@ -943,6 +980,10 @@ impl eframe::App for NetscopeApp {
             if !cap.is_running() && self.capture_error.is_none() {
                 self.capture_error = cap.error().map(|e| format!("Capture ended: {e}"));
             }
+            ctx.request_repaint_after(REPAINT_INTERVAL);
+        }
+        self.poll_loading();
+        if self.loading.is_some() {
             ctx.request_repaint_after(REPAINT_INTERVAL);
         }
         self.refresh_view();
