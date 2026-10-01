@@ -24,6 +24,8 @@ pub struct Iface {
     pub snaplen: u32,
     pub name: Option<String>,
     pub description: Option<String>,
+    /// What the file says the capture itself missed, if it said anything.
+    pub stats: crate::pcapng::Stats,
     /// Timestamp units per second, as the file declared them.
     pub ts_per_sec: u64,
 }
@@ -131,6 +133,7 @@ fn load_pcap(data: &[u8]) -> Result<Loaded, LoadError> {
         snaplen: file.header.snaplen,
         name: None,
         description: None,
+        stats: crate::pcapng::Stats::default(),
         ts_per_sec: file.header.ts_per_sec,
     };
     Ok(Loaded {
@@ -152,6 +155,7 @@ fn load_pcapng(data: &[u8]) -> Result<Loaded, LoadError> {
             snaplen: i.snaplen,
             name: i.name.clone(),
             description: i.description.clone(),
+            stats: i.stats,
             ts_per_sec: i.ts_per_sec,
         })
         .collect();
@@ -181,6 +185,21 @@ fn load_pcapng(data: &[u8]) -> Result<Loaded, LoadError> {
     }
     if interfaces.is_empty() {
         warnings.push("the file describes no interfaces; assuming Ethernet".into());
+    }
+    // A capture that dropped packets is incomplete, and the file knows it.
+    // Not saying so would let a user draw conclusions from traffic that is
+    // missing without any sign of it.
+    for (i, iface) in interfaces.iter().enumerate() {
+        let lost = iface.stats.total_lost();
+        if lost > 0 {
+            let name = iface
+                .name
+                .clone()
+                .unwrap_or_else(|| format!("interface {i}"));
+            warnings.push(format!(
+                "{name}: the file reports {lost} packets dropped during capture, \n                 so this capture is incomplete"
+            ));
+        }
     }
     let mut kinds: Vec<LinkType> = interfaces.iter().map(|i| i.link_type).collect();
     kinds.sort_by_key(|k| k.0);

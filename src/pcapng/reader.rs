@@ -147,6 +147,7 @@ pub fn read(data: &[u8]) -> Result<Section, ReadError> {
                     snaplen,
                     name: None,
                     description: None,
+                    stats: Stats::default(),
                     ts_per_sec: 1_000_000,
                     ts_offset: 0,
                 };
@@ -208,6 +209,34 @@ pub fn read(data: &[u8]) -> Result<Section, ReadError> {
                         bytes: Arc::from(bytes),
                     },
                 });
+            }
+            BLOCK_ISB => {
+                // The capture's own account of what it missed. Attached to the
+                // interface it names; a later ISB for the same interface
+                // replaces the earlier one, which is what a writer emitting
+                // them periodically intends.
+                let id = endian.u32(body, 0).unwrap_or(0) as usize;
+                let mut stats = Stats::default();
+                let u64_at = |v: &[u8]| -> Option<u64> {
+                    let b = v.get(..8)?;
+                    let mut a = [0u8; 8];
+                    a.copy_from_slice(b);
+                    Some(if endian.0 {
+                        u64::from_le_bytes(a)
+                    } else {
+                        u64::from_be_bytes(a)
+                    })
+                };
+                options(&endian, body, 12, |code, v| match code {
+                    OPT_ISB_IFRECV => stats.received = u64_at(v),
+                    OPT_ISB_IFDROP => stats.dropped = u64_at(v),
+                    OPT_ISB_FILTERACCEPT => stats.filter_accepted = u64_at(v),
+                    OPT_ISB_OSDROP => stats.os_dropped = u64_at(v),
+                    _ => {}
+                });
+                if let Some(iface) = section.interfaces.get_mut(id) {
+                    iface.stats = stats;
+                }
             }
             BLOCK_SPB => {
                 let orig_len = endian.u32(body, 0).unwrap_or(0);

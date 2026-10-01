@@ -481,6 +481,7 @@ fn interface_names_and_descriptions_survive_a_save() {
         snaplen: 1514,
         name: Some("enp3s0".into()),
         description: Some("Office uplink".into()),
+        stats: netscope::pcapng::Stats::default(),
         ts_per_sec: 1_000_000_000,
     }];
     let (written, _) =
@@ -531,4 +532,129 @@ fn an_opened_file_saved_again_keeps_its_interface_metadata() {
     );
     assert_eq!(second.interfaces[0].snaplen, 2048);
     assert_eq!(second.packets[0].1.ts.nanos, 500, "and the nanoseconds");
+}
+
+/// Interface Statistics Blocks: what the capture says it missed.
+mod interface_statistics {
+    use netscope::pcapng;
+
+    /// A file with an ISB carrying the counts given.
+    fn with_isb(received: Option<u64>, dropped: Option<u64>, os_dropped: Option<u64>) -> Vec<u8> {
+        let mut out = Vec::new();
+        let block = |out: &mut Vec<u8>, kind: u32, body: &[u8]| {
+            let padded = pcapng::pad4(body.len());
+            let total = (12 + padded) as u32;
+            out.extend_from_slice(&kind.to_le_bytes());
+            out.extend_from_slice(&total.to_le_bytes());
+            out.extend_from_slice(body);
+            out.resize(out.len() + padded - body.len(), 0);
+            out.extend_from_slice(&total.to_le_bytes());
+        };
+        let option = |body: &mut Vec<u8>, code: u16, value: &[u8]| {
+            body.extend_from_slice(&code.to_le_bytes());
+            body.extend_from_slice(&(value.len() as u16).to_le_bytes());
+            body.extend_from_slice(value);
+            body.resize(pcapng::pad4(body.len()), 0);
+        };
+
+        let mut shb = Vec::new();
+        shb.extend_from_slice(&pcapng::BYTE_ORDER_MAGIC.to_le_bytes());
+        shb.extend_from_slice(&1u16.to_le_bytes());
+        shb.extend_from_slice(&0u16.to_le_bytes());
+        shb.extend_from_slice(&u64::MAX.to_le_bytes());
+        block(&mut out, pcapng::BLOCK_SHB, &shb);
+
+        let mut idb = Vec::new();
+        idb.extend_from_slice(&1u16.to_le_bytes());
+        idb.extend_from_slice(&0u16.to_le_bytes());
+        idb.extend_from_slice(&65535u32.to_le_bytes());
+        option(&mut idb, pcapng::OPT_IF_NAME, b"eth0");
+        option(&mut idb, pcapng::OPT_ENDOFOPT, &[]);
+        block(&mut out, pcapng::BLOCK_IDB, &idb);
+
+        let mut isb = Vec::new();
+        isb.extend_from_slice(&0u32.to_le_bytes()); // interface 0
+        isb.extend_from_slice(&0u32.to_le_bytes()); // ts high
+        isb.extend_from_slice(&0u32.to_le_bytes()); // ts low
+        if let Some(v) = received {
+            option(&mut isb, pcapng::OPT_ISB_IFRECV, &v.to_le_bytes());
+        }
+        if let Some(v) = dropped {
+            option(&mut isb, pcapng::OPT_ISB_IFDROP, &v.to_le_bytes());
+        }
+        if let Some(v) = os_dropped {
+            option(&mut isb, pcapng::OPT_ISB_OSDROP, &v.to_le_bytes());
+        }
+        option(&mut isb, pcapng::OPT_ENDOFOPT, &[]);
+        block(&mut out, pcapng::BLOCK_ISB, &isb);
+        out
+    }
+
+    #[test]
+    fn the_counts_are_read_onto_the_interface() {
+        let bytes = with_isb(Some(5000), Some(42), None);
+        let section = pcapng::read(&bytes).expect("read");
+        let s = section.interfaces[0].stats;
+        assert_eq!(s.received, Some(5000));
+        assert_eq!(s.dropped, Some(42));
+        assert_eq!(s.os_dropped, None, "absent options stay absent");
+        assert_eq!(s.total_lost(), 42);
+    }
+
+    #[test]
+    fn both_kinds_of_drop_count_as_lost() {
+        let bytes = with_isb(Some(100), Some(3), Some(4));
+        let section = pcapng::read(&bytes).expect("read");
+        assert_eq!(section.interfaces[0].stats.total_lost(), 7);
+    }
+
+    #[test]
+    fn a_file_reporting_drops_says_so_on_load() {
+        // A capture that dropped packets is incomplete. Letting a user draw
+        // conclusions from it with no sign of that is the failure here.
+        let bytes = with_isb(Some(5000), Some(42), None);
+        let loaded = netscope::capture::file::load(&bytes).expect("load");
+        assert!(
+            loaded
+                .warnings
+                .iter()
+                .any(|w| w.contains("42 packets dropped") && w.contains("incomplete")),
+            "{:?}",
+            loaded.warnings
+        );
+        assert!(
+            loaded.warnings.iter().any(|w| w.contains("eth0")),
+            "and name the interface: {:?}",
+            loaded.warnings
+        );
+    }
+
+    #[test]
+    fn a_clean_capture_says_nothing_about_drops() {
+        let bytes = with_isb(Some(5000), Some(0), Some(0));
+        let loaded = netscope::capture::file::load(&bytes).expect("load");
+        assert!(
+            !loaded.warnings.iter().any(|w| w.contains("dropped")),
+            "{:?}",
+            loaded.warnings
+        );
+        // And a file with no ISB at all is equally quiet.
+        let none = netscope::capture::file::load(&with_isb(None, None, None)).expect("load");
+        assert!(!none.warnings.iter().any(|w| w.contains("dropped")));
+    }
+
+    #[test]
+    fn an_isb_naming_an_interface_that_does_not_exist_is_ignored() {
+        let mut bytes = with_isb(Some(1), Some(1), None);
+        // The ISB's interface id is the first four bytes of its body. Find it
+        // by its block type rather than by a fixed offset.
+        let isb = pcapng::BLOCK_ISB.to_le_bytes();
+        let at = bytes
+            .windows(4)
+            .position(|w| w == isb)
+            .expect("the ISB is in there");
+        bytes[at + 8..at + 12].copy_from_slice(&77u32.to_le_bytes());
+        let section = pcapng::read(&bytes).expect("still reads");
+        assert!(section.interfaces[0].stats.is_empty());
+    }
 }
