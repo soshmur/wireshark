@@ -39,6 +39,8 @@ pub struct Progress {
     warnings: Mutex<Vec<String>>,
     /// Link type of the file's first interface, for re-dissection later.
     link_type: Mutex<LinkType>,
+    /// The file's interface table, so a save can carry its metadata on.
+    interfaces: Mutex<Vec<super::file::Iface>>,
 }
 
 impl Progress {
@@ -51,6 +53,7 @@ impl Progress {
             error: Mutex::new(None),
             warnings: Mutex::new(Vec::new()),
             link_type: Mutex::new(LinkType::ETHERNET),
+            interfaces: Mutex::new(Vec::new()),
         }
     }
 
@@ -81,6 +84,14 @@ impl Progress {
 
     pub fn warnings(&self) -> Vec<String> {
         self.warnings.lock().map(|w| w.clone()).unwrap_or_default()
+    }
+
+    /// The interfaces the file described.
+    pub fn interfaces(&self) -> Vec<super::file::Iface> {
+        self.interfaces
+            .lock()
+            .map(|i| i.clone())
+            .unwrap_or_default()
     }
 
     pub fn link_type(&self) -> LinkType {
@@ -170,6 +181,9 @@ fn run(path: &Path, store: Arc<Store>, options: Options, progress: Arc<Progress>
     }
     if let Ok(mut l) = progress.link_type.lock() {
         *l = loaded.link_type_of(0);
+    }
+    if let Ok(mut i) = progress.interfaces.lock() {
+        *i = loaded.interfaces.clone();
     }
 
     // One State for the whole file, so conversations, reassembly and

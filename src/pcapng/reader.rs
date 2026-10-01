@@ -146,13 +146,29 @@ pub fn read(data: &[u8]) -> Result<Section, ReadError> {
                     link_type,
                     snaplen,
                     name: None,
+                    description: None,
                     ts_per_sec: 1_000_000,
+                    ts_offset: 0,
                 };
                 options(&endian, body, 8, |code, v| match code {
                     OPT_IF_NAME => iface.name = Some(String::from_utf8_lossy(v).into_owned()),
+                    OPT_IF_DESCRIPTION => {
+                        iface.description = Some(String::from_utf8_lossy(v).into_owned())
+                    }
                     OPT_IF_TSRESOL => {
                         if let Some(&r) = v.first() {
                             iface.ts_per_sec = Interface::ts_per_sec_from_tsresol(r);
+                        }
+                    }
+                    OPT_IF_TSOFFSET => {
+                        if let Some(b) = v.get(..8) {
+                            let mut a = [0u8; 8];
+                            a.copy_from_slice(b);
+                            iface.ts_offset = if endian.0 {
+                                i64::from_le_bytes(a)
+                            } else {
+                                i64::from_be_bytes(a)
+                            };
                         }
                     }
                     _ => {}
@@ -172,13 +188,15 @@ pub fn read(data: &[u8]) -> Result<Section, ReadError> {
                     at,
                     what: "EPB captured length exceeds block",
                 })?;
-                let per_sec = section
-                    .interfaces
-                    .get(interface as usize)
-                    .map_or(1_000_000, |i| i.ts_per_sec);
+                let iface = section.interfaces.get(interface as usize);
+                let per_sec = iface.map_or(1_000_000, |i| i.ts_per_sec);
+                let offset = iface.map_or(0, |i| i.ts_offset);
                 let ts_units = (u64::from(ts_hi) << 32) | u64::from(ts_lo);
                 let ts = Timestamp {
-                    secs: (ts_units / per_sec) as i64,
+                    // `if_tsoffset` is added in seconds, saturating rather
+                    // than wrapping: a file claiming an offset near i64::MAX
+                    // should not land in the distant past.
+                    secs: ((ts_units / per_sec) as i64).saturating_add(offset),
                     nanos: ((ts_units % per_sec) * (1_000_000_000 / per_sec.max(1))) as u32,
                 };
                 section.packets.push(Packet {

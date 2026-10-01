@@ -23,6 +23,7 @@ pub struct Iface {
     pub link_type: LinkType,
     pub snaplen: u32,
     pub name: Option<String>,
+    pub description: Option<String>,
     /// Timestamp units per second, as the file declared them.
     pub ts_per_sec: u64,
 }
@@ -129,6 +130,7 @@ fn load_pcap(data: &[u8]) -> Result<Loaded, LoadError> {
         link_type: LinkType(file.header.link_type as i32),
         snaplen: file.header.snaplen,
         name: None,
+        description: None,
         ts_per_sec: file.header.ts_per_sec,
     };
     Ok(Loaded {
@@ -149,6 +151,7 @@ fn load_pcapng(data: &[u8]) -> Result<Loaded, LoadError> {
             link_type: LinkType(i32::from(i.link_type)),
             snaplen: i.snaplen,
             name: i.name.clone(),
+            description: i.description.clone(),
             ts_per_sec: i.ts_per_sec,
         })
         .collect();
@@ -230,13 +233,37 @@ pub struct Saved {
 
 /// Write `frames` to a file.
 pub fn save_path(path: &Path, frames: &[Arc<Frame>], format: SaveFormat) -> io::Result<Saved> {
-    let (bytes, saved) = encode(frames, format)?;
+    save_path_preserving(path, frames, format, &[])
+}
+
+/// Write `frames`, carrying `source` interface metadata into the new file.
+///
+/// `source` is the interface table these frames were read from, if they came
+/// from a file. pcapng can hold an interface's name and description, and the
+/// brief asks for that metadata to survive a round trip - without this the
+/// names are replaced by the link type's, which is information thrown away
+/// for no reason.
+pub fn save_path_preserving(
+    path: &Path,
+    frames: &[Arc<Frame>],
+    format: SaveFormat,
+    source: &[Iface],
+) -> io::Result<Saved> {
+    let (bytes, saved) = encode_preserving(frames, format, source)?;
     std::fs::write(path, &bytes)?;
     Ok(saved)
 }
 
 /// Encode `frames`, returning the file bytes and what was done.
 pub fn encode(frames: &[Arc<Frame>], format: SaveFormat) -> io::Result<(Vec<u8>, Saved)> {
+    encode_preserving(frames, format, &[])
+}
+
+pub fn encode_preserving(
+    frames: &[Arc<Frame>],
+    format: SaveFormat,
+    source: &[Iface],
+) -> io::Result<(Vec<u8>, Saved)> {
     let mut notes = Vec::new();
     let bytes = match format {
         SaveFormat::Pcapng => {
@@ -253,7 +280,22 @@ pub fn encode(frames: &[Arc<Frame>], format: SaveFormat) -> io::Result<(Vec<u8>,
                 kinds.push(LinkType::ETHERNET);
             }
             for k in &kinds {
-                w.interface(k.0 as u16, 262_144, &k.name())?;
+                // Take the name and description from the source interface with
+                // this link type, when there was one. Matching on link type
+                // rather than index keeps the packet ids below simple while
+                // still carrying the metadata across.
+                let from = source.iter().find(|i| i.link_type == *k);
+                let name = from
+                    .and_then(|i| i.name.clone())
+                    .unwrap_or_else(|| k.name());
+                let snaplen = from.map_or(262_144, |i| i.snaplen.max(1));
+                let description = from.and_then(|i| i.description.clone());
+                w.interface_described(
+                    k.0 as u16,
+                    snaplen,
+                    &name,
+                    description.as_deref().unwrap_or(""),
+                )?;
             }
             for f in frames {
                 let id = kinds.iter().position(|k| *k == f.link_type).unwrap_or(0);

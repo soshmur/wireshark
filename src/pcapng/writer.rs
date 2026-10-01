@@ -43,12 +43,26 @@ impl<W: Write> Writer<W> {
 
     /// Write an Interface Description Block; returns its interface id.
     pub fn interface(&mut self, link_type: u16, snaplen: u32, name: &str) -> io::Result<u32> {
+        self.interface_described(link_type, snaplen, name, "")
+    }
+
+    /// An interface with a description as well as a name.
+    pub fn interface_described(
+        &mut self,
+        link_type: u16,
+        snaplen: u32,
+        name: &str,
+        description: &str,
+    ) -> io::Result<u32> {
         let mut body = Vec::new();
         body.extend_from_slice(&link_type.to_le_bytes());
         body.extend_from_slice(&0u16.to_le_bytes());
         body.extend_from_slice(&snaplen.to_le_bytes());
         if !name.is_empty() {
             option(&mut body, OPT_IF_NAME, name.as_bytes());
+        }
+        if !description.is_empty() {
+            option(&mut body, OPT_IF_DESCRIPTION, description.as_bytes());
         }
         option(&mut body, OPT_IF_TSRESOL, &[9]);
         option(&mut body, OPT_ENDOFOPT, &[]);

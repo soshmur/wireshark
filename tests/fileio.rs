@@ -311,3 +311,224 @@ mod against_libpcap {
         let _ = std::fs::remove_file(&path);
     }
 }
+
+/// pcapng options that change what a timestamp means, or that carry metadata
+/// a round trip should keep.
+mod pcapng_options {
+    use netscope::pcapng;
+
+    /// Build a pcapng file by hand so an option can be set that netscope's
+    /// own writer does not emit.
+    struct Build {
+        out: Vec<u8>,
+    }
+
+    impl Build {
+        fn new() -> Build {
+            let mut b = Build { out: Vec::new() };
+            let mut body = Vec::new();
+            body.extend_from_slice(&pcapng::BYTE_ORDER_MAGIC.to_le_bytes());
+            body.extend_from_slice(&1u16.to_le_bytes());
+            body.extend_from_slice(&0u16.to_le_bytes());
+            body.extend_from_slice(&u64::MAX.to_le_bytes());
+            b.block(pcapng::BLOCK_SHB, &body);
+            b
+        }
+
+        fn block(&mut self, kind: u32, body: &[u8]) {
+            let padded = pcapng::pad4(body.len());
+            let total = (12 + padded) as u32;
+            self.out.extend_from_slice(&kind.to_le_bytes());
+            self.out.extend_from_slice(&total.to_le_bytes());
+            self.out.extend_from_slice(body);
+            self.out.resize(self.out.len() + padded - body.len(), 0);
+            self.out.extend_from_slice(&total.to_le_bytes());
+        }
+
+        fn option(body: &mut Vec<u8>, code: u16, value: &[u8]) {
+            body.extend_from_slice(&code.to_le_bytes());
+            body.extend_from_slice(&(value.len() as u16).to_le_bytes());
+            body.extend_from_slice(value);
+            body.resize(pcapng::pad4(body.len()), 0);
+        }
+
+        /// An IDB with `if_tsresol` 6 and an optional `if_tsoffset`.
+        fn interface(&mut self, offset: Option<i64>, description: Option<&str>) {
+            let mut body = Vec::new();
+            body.extend_from_slice(&1u16.to_le_bytes()); // Ethernet
+            body.extend_from_slice(&0u16.to_le_bytes());
+            body.extend_from_slice(&65535u32.to_le_bytes());
+            Self::option(&mut body, pcapng::OPT_IF_NAME, b"eth0");
+            if let Some(d) = description {
+                Self::option(&mut body, pcapng::OPT_IF_DESCRIPTION, d.as_bytes());
+            }
+            Self::option(&mut body, pcapng::OPT_IF_TSRESOL, &[6]);
+            if let Some(o) = offset {
+                Self::option(&mut body, pcapng::OPT_IF_TSOFFSET, &o.to_le_bytes());
+            }
+            Self::option(&mut body, pcapng::OPT_ENDOFOPT, &[]);
+            self.block(pcapng::BLOCK_IDB, &body);
+        }
+
+        /// An EPB whose timestamp counts `units` of the interface's
+        /// resolution.
+        fn packet(&mut self, units: u64) {
+            let data = [0u8; 14];
+            let mut body = Vec::new();
+            body.extend_from_slice(&0u32.to_le_bytes());
+            body.extend_from_slice(&((units >> 32) as u32).to_le_bytes());
+            body.extend_from_slice(&(units as u32).to_le_bytes());
+            body.extend_from_slice(&(data.len() as u32).to_le_bytes());
+            body.extend_from_slice(&(data.len() as u32).to_le_bytes());
+            body.extend_from_slice(&data);
+            body.resize(pcapng::pad4(body.len()), 0);
+            self.block(pcapng::BLOCK_EPB, &body);
+        }
+    }
+
+    #[test]
+    fn if_tsoffset_shifts_the_timestamps() {
+        // A writer may store small timestamps against a base held in the
+        // option. Ignoring it reports times decades adrift, with nothing to
+        // say something was missed.
+        let base = 1_700_000_000i64;
+        let mut b = Build::new();
+        b.interface(Some(base), None);
+        b.packet(5_000_000); // five seconds at microsecond resolution
+        let section = pcapng::read(&b.out).expect("read");
+        assert_eq!(section.interfaces[0].ts_offset, base);
+        assert_eq!(section.packets[0].frame.ts.secs, base + 5);
+    }
+
+    #[test]
+    fn without_the_option_nothing_is_shifted() {
+        let mut b = Build::new();
+        b.interface(None, None);
+        b.packet(5_000_000);
+        let section = pcapng::read(&b.out).expect("read");
+        assert_eq!(section.interfaces[0].ts_offset, 0);
+        assert_eq!(section.packets[0].frame.ts.secs, 5);
+    }
+
+    #[test]
+    fn a_negative_offset_works_and_an_absurd_one_does_not_wrap() {
+        let mut b = Build::new();
+        b.interface(Some(-10), None);
+        b.packet(20_000_000);
+        let section = pcapng::read(&b.out).expect("read");
+        assert_eq!(section.packets[0].frame.ts.secs, 10);
+
+        // An offset near the limit must saturate, not wrap into the past.
+        let mut b = Build::new();
+        b.interface(Some(i64::MAX), None);
+        b.packet(5_000_000);
+        let section = pcapng::read(&b.out).expect("read");
+        assert_eq!(section.packets[0].frame.ts.secs, i64::MAX);
+    }
+
+    #[test]
+    fn an_interface_description_is_read_and_round_trips() {
+        let mut b = Build::new();
+        b.interface(None, Some("Corporate uplink"));
+        b.packet(1_000_000);
+        let section = pcapng::read(&b.out).expect("read");
+        assert_eq!(
+            section.interfaces[0].description.as_deref(),
+            Some("Corporate uplink")
+        );
+
+        // And the writer can emit one, so a description survives a save.
+        let mut w = pcapng::Writer::new(Vec::new(), "netscope").expect("shb");
+        w.interface_described(1, 65535, "eth0", "Corporate uplink")
+            .expect("idb");
+        let bytes = w.finish().expect("finish");
+        let back = pcapng::read(&bytes).expect("reread");
+        assert_eq!(back.interfaces[0].name.as_deref(), Some("eth0"));
+        assert_eq!(
+            back.interfaces[0].description.as_deref(),
+            Some("Corporate uplink")
+        );
+    }
+
+    #[test]
+    fn a_truncated_tsoffset_option_is_ignored_rather_than_read_short() {
+        // Four bytes where eight are required. Reading what is there would
+        // produce a plausible-looking wrong answer.
+        let mut b = Build::new();
+        let mut body = Vec::new();
+        body.extend_from_slice(&1u16.to_le_bytes());
+        body.extend_from_slice(&0u16.to_le_bytes());
+        body.extend_from_slice(&65535u32.to_le_bytes());
+        Build::option(&mut body, pcapng::OPT_IF_TSRESOL, &[6]);
+        Build::option(&mut body, pcapng::OPT_IF_TSOFFSET, &[1, 2, 3, 4]);
+        Build::option(&mut body, pcapng::OPT_ENDOFOPT, &[]);
+        b.block(pcapng::BLOCK_IDB, &body);
+        b.packet(1_000_000);
+        let section = pcapng::read(&b.out).expect("read");
+        assert_eq!(section.interfaces[0].ts_offset, 0);
+        assert_eq!(section.packets[0].frame.ts.secs, 1);
+    }
+}
+
+#[test]
+fn interface_names_and_descriptions_survive_a_save() {
+    // The brief asks for interface metadata to be preserved. Without it the
+    // names are replaced by the link type's, which throws away information
+    // the file had for no reason.
+    let dissected = frames("streams");
+    let source = vec![netscope::capture::file::Iface {
+        link_type: LinkType::ETHERNET,
+        snaplen: 1514,
+        name: Some("enp3s0".into()),
+        description: Some("Office uplink".into()),
+        ts_per_sec: 1_000_000_000,
+    }];
+    let (written, _) =
+        file::encode_preserving(&dissected, SaveFormat::Pcapng, &source).expect("encode");
+    let back = file::load(&written).expect("reread");
+    assert_eq!(back.interfaces.len(), 1);
+    assert_eq!(back.interfaces[0].name.as_deref(), Some("enp3s0"));
+    assert_eq!(
+        back.interfaces[0].description.as_deref(),
+        Some("Office uplink")
+    );
+    assert_eq!(back.interfaces[0].snaplen, 1514, "the snaplen too");
+
+    // With nothing to preserve, the link type's name is a reasonable default
+    // rather than an empty field.
+    let (written, _) = file::encode(&dissected, SaveFormat::Pcapng).expect("encode");
+    let back = file::load(&written).expect("reread");
+    assert!(back.interfaces[0].name.is_some());
+}
+
+#[test]
+fn an_opened_file_saved_again_keeps_its_interface_metadata() {
+    // The round trip the brief is really asking about: open, save, open.
+    let mut w = netscope::pcapng::Writer::new(Vec::new(), "test").expect("shb");
+    w.interface_described(1, 2048, "wlan0", "Wireless")
+        .expect("idb");
+    w.packet(
+        0,
+        netscope::capture::Timestamp {
+            secs: 1_700_000_000,
+            nanos: 500,
+        },
+        14,
+        &[0u8; 14],
+    )
+    .expect("packet");
+    let original = w.finish().expect("finish");
+
+    let first = file::load(&original).expect("load");
+    let dissected = first.dissect_all(Options::default());
+    let (resaved, _) =
+        file::encode_preserving(&dissected, SaveFormat::Pcapng, &first.interfaces).expect("encode");
+    let second = file::load(&resaved).expect("reload");
+    assert_eq!(second.interfaces[0].name.as_deref(), Some("wlan0"));
+    assert_eq!(
+        second.interfaces[0].description.as_deref(),
+        Some("Wireless")
+    );
+    assert_eq!(second.interfaces[0].snaplen, 2048);
+    assert_eq!(second.packets[0].1.ts.nanos, 500, "and the nanoseconds");
+}

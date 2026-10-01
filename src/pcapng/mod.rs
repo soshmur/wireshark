@@ -16,6 +16,8 @@ pub const OPT_ENDOFOPT: u16 = 0;
 pub const OPT_COMMENT: u16 = 1;
 pub const OPT_IF_NAME: u16 = 2;
 pub const OPT_IF_TSRESOL: u16 = 9;
+pub const OPT_IF_TSOFFSET: u16 = 14;
+pub const OPT_IF_DESCRIPTION: u16 = 3;
 pub const OPT_SHB_USERAPPL: u16 = 4;
 
 /// An interface as described by an IDB.
@@ -24,8 +26,15 @@ pub struct Interface {
     pub link_type: u16,
     pub snaplen: u32,
     pub name: Option<String>,
+    pub description: Option<String>,
     /// Timestamp units per second (10^6 for the default 6, 10^9 for 9).
     pub ts_per_sec: u64,
+    /// Seconds added to every timestamp on this interface (`if_tsoffset`).
+    ///
+    /// Writers use it to store small timestamps against a base, and a reader
+    /// that ignores it reports times decades adrift without any sign that
+    /// something was missed.
+    pub ts_offset: i64,
 }
 
 impl Interface {

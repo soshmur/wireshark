@@ -127,6 +127,9 @@ pub struct NetscopeApp {
     file_message: Option<(bool, String)>,
     /// A file being read, on its own thread.
     loading: Option<crate::capture::loader::Loader>,
+    /// Interfaces the current frames were read from, so a save can carry
+    /// their names and descriptions into the new file.
+    source_interfaces: Vec<crate::capture::file::Iface>,
     store_stats: StoreStats,
     /// Link type the stored frames were dissected under, so they can be
     /// dissected again if a dissection preference changes.
@@ -181,6 +184,7 @@ impl NetscopeApp {
             source: None,
             file_message: None,
             loading: None,
+            source_interfaces: Vec::new(),
             store_stats: StoreStats::default(),
             link_type: netscope_ffi::LinkType::ETHERNET,
             store,
@@ -373,6 +377,7 @@ impl NetscopeApp {
             .map(|n| n.to_string_lossy().into_owned())
             .or_else(|| Some(path.display().to_string()));
         self.file_message = None;
+        self.source_interfaces.clear();
         self.loading = Some(crate::capture::loader::Loader::spawn(
             path,
             Arc::clone(&self.store),
@@ -392,6 +397,7 @@ impl NetscopeApp {
         let path = loader.path.clone();
         self.loading = None;
         self.link_type = progress.link_type();
+        self.source_interfaces = progress.interfaces();
         if let Some(e) = progress.error() {
             self.file_message = Some((false, e));
             self.source = None;
@@ -432,7 +438,12 @@ impl NetscopeApp {
         set: file_dialog::FrameSet,
     ) {
         let frames = self.frames_for(set);
-        match crate::capture::file::save_path(path, &frames, format) {
+        match crate::capture::file::save_path_preserving(
+            path,
+            &frames,
+            format,
+            &self.source_interfaces,
+        ) {
             Ok(saved) => {
                 let mut note = format!(
                     "Wrote {} packets ({}) to {}",
