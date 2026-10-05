@@ -113,6 +113,10 @@ pub fn load(data: &[u8]) -> Result<Loaded, LoadError> {
         Format::Pcap => load_pcap(data),
         Format::Pcapng => load_pcapng(data),
         Format::PcapModified => Err(LoadError::Format(pcap::ReadError::Modified.to_string())),
+        Format::Gzip => Err(LoadError::Format(
+            "this is a gzip file; netscope does not decompress. If it is a capture, \n             run `gunzip` on it first"
+                .into(),
+        )),
         Format::Unknown => Err(LoadError::Format(
             "not a pcap or pcapng file (the first four bytes match neither format)".into(),
         )),

@@ -71,6 +71,7 @@ pub fn show(ctx: &egui::Context, state: &mut HierarchyState) -> Action {
                 .column(Column::initial(100.0).at_least(60.0))
                 .column(Column::initial(70.0).at_least(50.0))
                 .column(Column::initial(90.0).at_least(60.0))
+                .column(Column::initial(90.0).at_least(60.0))
                 .column(Column::remainder().at_least(80.0))
                 .sense(egui::Sense::click())
                 .header(20.0, |mut header| {
@@ -82,6 +83,7 @@ pub fn show(ctx: &egui::Context, state: &mut HierarchyState) -> Action {
                         "% bytes",
                         "Ends here",
                         "Bytes ending",
+                        "Bits/s",
                     ] {
                         header.col(|ui| {
                             ui.strong(title);
@@ -115,6 +117,12 @@ pub fn show(ctx: &egui::Context, state: &mut HierarchyState) -> Action {
                         });
                         r.col(|ui| {
                             ui.label(row.end_bytes.to_string());
+                        });
+                        r.col(|ui| {
+                            ui.label(match totals.bits_per_second(row.bytes) {
+                                Some(bps) => crate::app::io_graph_window::short_number(bps),
+                                None => "—".to_string(),
+                            });
                         });
                         let resp = r.response();
                         if resp.double_clicked() {

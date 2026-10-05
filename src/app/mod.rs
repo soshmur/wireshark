@@ -12,7 +12,7 @@ mod first_run;
 mod follow_window;
 mod hex_pane;
 mod hierarchy_window;
-mod io_graph_window;
+pub mod io_graph_window;
 mod packet_list;
 mod settings;
 pub mod timefmt;
@@ -428,6 +428,16 @@ impl NetscopeApp {
             file_dialog::FrameSet::All => self.view.snapshot().iter().cloned().collect(),
             file_dialog::FrameSet::Displayed => self.view.iter().cloned().collect(),
             file_dialog::FrameSet::Selected => self.selected_frame().into_iter().collect(),
+            // Marked frames come out in capture order, not the order they
+            // were marked: a file whose packets are out of time order is a
+            // file that analyses wrongly.
+            file_dialog::FrameSet::Marked => self
+                .view
+                .snapshot()
+                .iter()
+                .filter(|f| self.list.is_marked(f.number))
+                .cloned()
+                .collect(),
         }
     }
 
@@ -556,6 +566,14 @@ impl NetscopeApp {
             }
             return;
         }
+        if ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::M)) {
+            if ctx.input(|i| i.modifiers.shift) {
+                self.list.clear_marks();
+            } else {
+                self.list.toggle_mark();
+            }
+            return;
+        }
         // F3 repeats the last find without returning to the bar.
         if self.find.open && ctx.input(|i| i.key_pressed(egui::Key::F3)) {
             let backward = ctx.input(|i| i.modifiers.shift);
@@ -675,6 +693,35 @@ impl NetscopeApp {
                     .clicked()
                 {
                     self.run_find(find::Direction::Backward);
+                    ui.close_menu();
+                }
+                ui.separator();
+                let has_selection = self.list.selected.is_some();
+                if ui
+                    .add_enabled(has_selection, egui::Button::new("Mark packet	Ctrl+M"))
+                    .clicked()
+                {
+                    self.list.toggle_mark();
+                    ui.close_menu();
+                }
+                let marks = self.list.marked.len();
+                if ui
+                    .add_enabled(
+                        marks > 0,
+                        egui::Button::new(format!("Unmark all ({marks})	Ctrl+Shift+M")),
+                    )
+                    .clicked()
+                {
+                    self.list.clear_marks();
+                    ui.close_menu();
+                }
+                if ui
+                    .add_enabled(marks > 0, egui::Button::new("Export marked{2026}"))
+                    .clicked()
+                {
+                    self.dialog
+                        .open_for(file_dialog::Mode::Save, Some("marked".into()));
+                    self.dialog.set = file_dialog::FrameSet::Marked;
                     ui.close_menu();
                 }
                 ui.separator();
@@ -875,6 +922,9 @@ impl NetscopeApp {
                 ));
             } else {
                 ui.label(format!("Frames: {}", st.frames));
+            }
+            if !self.list.marked.is_empty() {
+                ui.label(format!("Marked: {}", self.list.marked.len()));
             }
             if st.evicted_frames > 0 {
                 ui.label(format!("Evicted: {}", st.evicted_frames));

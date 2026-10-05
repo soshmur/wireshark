@@ -89,6 +89,10 @@ pub enum Format {
     Pcapng,
     /// Looks like pcap but is a variant this does not read.
     PcapModified,
+    /// A gzip stream, which may well be a capture inside. netscope does not
+    /// decompress - that would mean a compression dependency - but naming it
+    /// lets the error say `gunzip` instead of "not a capture".
+    Gzip,
     Unknown,
 }
 
@@ -106,6 +110,10 @@ pub fn sniff(data: &[u8]) -> Format {
     let le = u32::from_le_bytes([first[0], first[1], first[2], first[3]]);
     if be == crate::pcapng::BLOCK_SHB {
         return Format::Pcapng;
+    }
+    // gzip: 1f 8b, then the deflate method.
+    if first.starts_with(&[0x1f, 0x8b]) {
+        return Format::Gzip;
     }
     match (be, le) {
         (MAGIC_MICROS, _) | (_, MAGIC_MICROS) | (MAGIC_NANOS, _) | (_, MAGIC_NANOS) => Format::Pcap,
@@ -157,6 +165,15 @@ mod tests {
         assert_eq!(sniff(b"\x00\x01"), Format::Unknown);
         assert_eq!(sniff(&with_magic(*b"RIFF")), Format::Unknown);
         assert_eq!(sniff(&with_magic([0; 4])), Format::Unknown);
+    }
+
+    #[test]
+    fn a_gzip_stream_is_named_so_the_error_can_help() {
+        // Saying "not a capture" about a compressed capture is unhelpful
+        // when the fix is one command.
+        let mut gz = vec![0x1f, 0x8b, 0x08, 0x00];
+        gz.extend_from_slice(&[0; 20]);
+        assert_eq!(sniff(&gz), Format::Gzip);
     }
 
     #[test]

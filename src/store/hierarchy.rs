@@ -146,18 +146,38 @@ pub fn hierarchy(snapshot: &Snapshot) -> Vec<Row> {
     out
 }
 
-/// Totals for the percentage columns.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// Totals for the percentage and rate columns.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct Totals {
     pub packets: u64,
     pub bytes: u64,
+    /// Seconds between the first and last frame, for the rate column.
+    pub duration: f64,
+}
+
+impl Totals {
+    /// Bits per second a byte count represents over the capture, or `None`
+    /// when the capture is too short to divide by.
+    pub fn bits_per_second(&self, bytes: u64) -> Option<f64> {
+        (self.duration > 0.000_001).then(|| bytes as f64 * 8.0 / self.duration)
+    }
 }
 
 pub fn totals(snapshot: &Snapshot) -> Totals {
     let mut t = Totals::default();
+    let mut first: Option<crate::capture::Timestamp> = None;
+    let mut last: Option<crate::capture::Timestamp> = None;
     for frame in snapshot.iter() {
         t.packets += 1;
         t.bytes += u64::from(frame.orig_len);
+        if first.is_none() {
+            first = Some(frame.ts);
+        }
+        last = Some(frame.ts);
+    }
+    if let (Some(a), Some(b)) = (first, last) {
+        let secs = (b.secs - a.secs) as f64;
+        t.duration = (secs + (f64::from(b.nanos) - f64::from(a.nanos)) / 1e9).max(0.0);
     }
     t
 }
@@ -269,5 +289,23 @@ mod tests {
         let snap = store.snapshot();
         assert!(hierarchy(&snap).is_empty());
         assert_eq!(totals(&snap), Totals::default());
+    }
+
+    #[test]
+    fn a_rate_needs_a_duration_to_divide_by() {
+        // One frame means zero duration; dividing by it would report an
+        // infinite bit rate.
+        let store = store_of(1);
+        let t = totals(&store.snapshot());
+        assert_eq!(t.duration, 0.0);
+        assert_eq!(t.bits_per_second(t.bytes), None);
+
+        let store = store_of(2000);
+        let t = totals(&store.snapshot());
+        assert!(t.duration > 0.0, "the generated frames span time");
+        let bps = t.bits_per_second(t.bytes).expect("a rate");
+        assert!(bps.is_finite() && bps > 0.0);
+        // Bits, not bytes.
+        assert!((bps - t.bytes as f64 * 8.0 / t.duration).abs() < 1.0);
     }
 }

@@ -18,6 +18,33 @@ pub struct ListState {
     pub scroll_to: Option<(usize, egui::Align)>,
     /// Keep the newest frame in view while capturing.
     pub follow: bool,
+    /// Frames the user has marked, by number.
+    ///
+    /// Numbers rather than rows, because rows shift as the ring evicts, and
+    /// a mark that silently moved to a different packet would be worse than
+    /// one that disappeared.
+    pub marked: std::collections::BTreeSet<u32>,
+}
+
+impl ListState {
+    pub fn is_marked(&self, number: u32) -> bool {
+        self.marked.contains(&number)
+    }
+
+    /// Mark or unmark the selected frame; returns what it became.
+    pub fn toggle_mark(&mut self) -> Option<bool> {
+        let n = self.selected?;
+        if self.marked.remove(&n) {
+            Some(false)
+        } else {
+            self.marked.insert(n);
+            Some(true)
+        }
+    }
+
+    pub fn clear_marks(&mut self) {
+        self.marked.clear();
+    }
 }
 
 /// Which keyboard navigation happened this frame, resolved by the caller
@@ -124,11 +151,20 @@ pub fn show(
                     return;
                 };
                 let selected = state.selected == Some(frame.number);
+                let marked = state.is_marked(frame.number);
                 row.set_selected(selected);
                 // A selected row keeps the selection highlight; the rule
                 // colour would hide it.
                 let tint = if selected {
                     None
+                } else if marked {
+                    // A mark outranks the colour rules: it is the user's own
+                    // annotation, and a rule hiding it would make marking
+                    // look broken on coloured rows.
+                    Some(RowColours {
+                        background: egui::Color32::from_rgb(70, 70, 20),
+                        foreground: egui::Color32::from_rgb(255, 245, 170),
+                    })
                 } else {
                     colours.and_then(|c| c.colours(frame))
                 };
@@ -181,4 +217,54 @@ pub fn show(
                 }
             });
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn marking_toggles_and_reports_what_it_became() {
+        let mut s = ListState {
+            selected: Some(7),
+            ..ListState::default()
+        };
+        assert_eq!(s.toggle_mark(), Some(true));
+        assert!(s.is_marked(7));
+        assert_eq!(s.toggle_mark(), Some(false));
+        assert!(!s.is_marked(7));
+    }
+
+    #[test]
+    fn marking_nothing_marks_nothing() {
+        let mut s = ListState::default();
+        assert_eq!(s.toggle_mark(), None);
+        assert!(s.marked.is_empty());
+    }
+
+    #[test]
+    fn marks_are_held_by_frame_number_not_row() {
+        // Rows shift as the ring evicts. A mark that silently moved to a
+        // different packet would be worse than one that disappeared.
+        let mut s = ListState::default();
+        for n in [3u32, 1, 2] {
+            s.selected = Some(n);
+            s.toggle_mark();
+        }
+        // A BTreeSet, so they come back in capture order whatever order they
+        // were marked in - an exported file out of time order analyses wrongly.
+        assert_eq!(s.marked.iter().copied().collect::<Vec<_>>(), vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn clearing_removes_every_mark() {
+        let mut s = ListState::default();
+        for n in 1..=5u32 {
+            s.selected = Some(n);
+            s.toggle_mark();
+        }
+        assert_eq!(s.marked.len(), 5);
+        s.clear_marks();
+        assert!(s.marked.is_empty());
+    }
 }

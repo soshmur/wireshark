@@ -20,6 +20,8 @@ pub enum FrameSet {
     Displayed,
     /// Only the selected frame.
     Selected,
+    /// Only the frames the user marked.
+    Marked,
 }
 
 impl FrameSet {
@@ -28,6 +30,7 @@ impl FrameSet {
             FrameSet::All => "All packets",
             FrameSet::Displayed => "Displayed packets",
             FrameSet::Selected => "Selected packet",
+            FrameSet::Marked => "Marked packets",
         }
     }
 }
@@ -85,7 +88,11 @@ fn default_dir() -> PathBuf {
 }
 
 /// Extensions the open list shows by default.
-const CAPTURE_EXTENSIONS: [&str; 6] = ["pcap", "pcapng", "cap", "ntar", "pcapng.gz", "dmp"];
+///
+/// No `.gz`: netscope cannot decompress, and listing a file it will refuse
+/// is worse than not listing it. "Show all files" still reveals them, and
+/// pointing at one gives an error that names `gunzip`.
+const CAPTURE_EXTENSIONS: [&str; 5] = ["pcap", "pcapng", "cap", "ntar", "dmp"];
 
 fn looks_like_capture(path: &Path) -> bool {
     path.extension()
@@ -272,7 +279,12 @@ pub fn show(ctx: &egui::Context, d: &mut FileDialog) -> Action {
                         );
                     ui.separator();
                     ui.label("Write:");
-                    for set in [FrameSet::All, FrameSet::Displayed, FrameSet::Selected] {
+                    for set in [
+                        FrameSet::All,
+                        FrameSet::Displayed,
+                        FrameSet::Selected,
+                        FrameSet::Marked,
+                    ] {
                         ui.selectable_value(&mut d.set, set, set.name());
                     }
                 });
@@ -344,6 +356,10 @@ mod tests {
         assert!(looks_like_capture(Path::new("a.PCAPNG")));
         assert!(looks_like_capture(Path::new("/tmp/b.Cap")));
         assert!(!looks_like_capture(Path::new("a.txt")));
+        assert!(
+            !looks_like_capture(Path::new("a.pcapng.gz")),
+            "listing a file that cannot be opened is worse than not listing it"
+        );
         assert!(!looks_like_capture(Path::new("noextension")));
     }
 
