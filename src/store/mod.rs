@@ -6,6 +6,7 @@
 //! the front, so the configured limits are honoured to within one chunk.
 
 pub mod conversations;
+pub mod expert;
 pub mod follow;
 pub mod hierarchy;
 pub mod io_graph;

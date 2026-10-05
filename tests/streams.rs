@@ -769,3 +769,95 @@ mod conversations {
         }
     }
 }
+
+/// The expert summary: every finding in a capture, grouped.
+mod expert_summary {
+    use super::load;
+    use netscope::dissect::Severity;
+    use netscope::store::expert::{counts, findings};
+    use netscope::store::{Limits, Store};
+    use std::sync::Arc;
+
+    fn gathered(fixture: &str) -> Vec<netscope::store::expert::Entry> {
+        let store = Store::new(Limits::default());
+        let frames: Vec<Arc<netscope::dissect::Frame>> =
+            load(fixture).into_iter().map(Arc::new).collect();
+        store.append(frames);
+        findings(&store.snapshot())
+    }
+
+    #[test]
+    fn every_finding_in_the_analysis_fixture_is_gathered() {
+        // The fixture was built so each finding lands on known frames; the
+        // summary must account for all of them and no more.
+        let entries = gathered("tcp_analysis");
+        let by_field = |field: &str| {
+            entries
+                .iter()
+                .find(|e| e.field == field)
+                .map(|e| (e.count, e.first_frames.clone()))
+        };
+        assert_eq!(by_field("tcp.analysis.retransmission"), Some((1, vec![5])));
+        assert_eq!(
+            by_field("tcp.analysis.lost_segment"),
+            Some((2, vec![8, 10]))
+        );
+        assert_eq!(
+            by_field("tcp.analysis.duplicate_ack"),
+            Some((3, vec![12, 13, 14]))
+        );
+        assert_eq!(by_field("tcp.analysis.overlap"), Some((1, vec![16])));
+        assert_eq!(by_field("tcp.analysis.zero_window"), Some((1, vec![17])));
+        assert_eq!(by_field("tcp.analysis.keep_alive"), Some((1, vec![18])));
+    }
+
+    #[test]
+    fn the_worst_finding_comes_first() {
+        // Someone opening this window wants to know the worst thing in the
+        // capture, not the most common.
+        let entries = gathered("malformed");
+        assert!(!entries.is_empty());
+        assert_eq!(entries[0].severity, Severity::Error);
+        for pair in entries.windows(2) {
+            assert!(pair[0].severity >= pair[1].severity, "{entries:#?}");
+        }
+    }
+
+    #[test]
+    fn severity_counts_match_the_entries() {
+        let entries = gathered("tcp_analysis");
+        let c = counts(&entries);
+        let total: u64 = entries.iter().map(|e| e.count).sum();
+        assert_eq!(c.total(), total);
+        assert!(c.warnings > 0, "the fixture has gaps and an overlap");
+        assert!(c.notes > 0, "and resends");
+    }
+
+    #[test]
+    fn an_ordinary_capture_reports_nothing() {
+        assert!(gathered("streams").is_empty());
+        assert!(gathered("desegment").is_empty());
+    }
+
+    #[test]
+    fn each_entry_filters_to_the_frames_it_counted() {
+        // The window's action has to select what the row says it counted,
+        // or the summary and the list disagree.
+        let frames = load("tcp_analysis");
+        for entry in gathered("tcp_analysis") {
+            let test = netscope::filter::compile(&entry.filter()).expect("compile");
+            let hits: Vec<u32> = frames
+                .iter()
+                .filter(|f| netscope::filter::matches(&test, f))
+                .map(|f| f.number)
+                .collect();
+            assert_eq!(
+                hits.len() as u64,
+                entry.count,
+                "{} said {} frames, its filter found {hits:?}",
+                entry.field,
+                entry.count
+            );
+        }
+    }
+}

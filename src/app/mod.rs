@@ -5,6 +5,7 @@ pub mod colour_rules;
 mod conversations_window;
 mod detail_tree;
 mod device_panel;
+mod expert_window;
 mod file_dialog;
 mod filter_bar;
 pub mod find;
@@ -121,6 +122,7 @@ pub struct NetscopeApp {
     dialog: file_dialog::FileDialog,
     hierarchy: hierarchy_window::HierarchyState,
     io_graph: io_graph_window::IoGraphState,
+    expert: expert_window::ExpertState,
     /// Where the frames in the store came from, for the title bar.
     source: Option<String>,
     /// The outcome of the last open or save, shown until the next one.
@@ -181,6 +183,7 @@ impl NetscopeApp {
             dialog: file_dialog::FileDialog::default(),
             hierarchy: hierarchy_window::HierarchyState::default(),
             io_graph: io_graph_window::IoGraphState::default(),
+            expert: expert_window::ExpertState::default(),
             source: None,
             file_message: None,
             loading: None,
@@ -517,6 +520,23 @@ impl NetscopeApp {
             .cloned()
     }
 
+    /// Select `number` and bring it into view, if it is displayed.
+    fn go_to_frame(&mut self, number: u32) {
+        if let Some(row) = self.view.row_of(number) {
+            self.list.selected = Some(number);
+            self.list.scroll_to = Some((row, egui::Align::Center));
+            self.list.follow = false;
+            self.focus = Focus::List;
+        } else {
+            // The frame exists but a filter is hiding it. Saying so beats
+            // appearing to do nothing.
+            self.file_message = Some((
+                false,
+                format!("Frame {number} is not shown by the current display filter"),
+            ));
+        }
+    }
+
     /// Move the selection to the next row satisfying the find query.
     fn run_find(&mut self, direction: find::Direction) {
         let Ok(query) = self.find.compiled() else {
@@ -783,6 +803,10 @@ impl NetscopeApp {
                 }
                 if ui.button("I/O graph{2026}").clicked() {
                     self.io_graph.open = true;
+                    ui.close_menu();
+                }
+                if ui.button("Expert information{2026}").clicked() {
+                    self.expert.open = true;
                     ui.close_menu();
                 }
             });
@@ -1167,6 +1191,21 @@ impl eframe::App for NetscopeApp {
                 file_dialog::Action::None => {}
             }
         }
+        if self.expert.open {
+            let version = self.view.snapshot().version();
+            if self.expert.stale(version) {
+                let entries = crate::store::expert::findings(self.view.snapshot());
+                self.expert.set(entries, version);
+            }
+            match expert_window::show(ctx, &mut self.expert) {
+                expert_window::Action::Filter(text) => {
+                    self.filter.set(text);
+                    self.rebuild_view();
+                }
+                expert_window::Action::GoTo(number) => self.go_to_frame(number),
+                expert_window::Action::None => {}
+            }
+        }
         if self.hierarchy.open {
             let version = self.view.snapshot().version();
             if self.hierarchy.stale(version) {
@@ -1218,13 +1257,7 @@ impl eframe::App for NetscopeApp {
         }
         if self.follow.open {
             match follow_window::show(ctx, &mut self.follow) {
-                follow_window::Action::GoTo(number) => {
-                    if let Some(row) = self.view.row_of(number) {
-                        self.list.selected = Some(number);
-                        self.list.scroll_to = Some((row, egui::Align::Center));
-                        self.list.follow = false;
-                    }
-                }
+                follow_window::Action::GoTo(number) => self.go_to_frame(number),
                 follow_window::Action::FilterStream(id) => {
                     self.filter
                         .set(format!("tcp.stream == {id} || udp.stream == {id}"));
